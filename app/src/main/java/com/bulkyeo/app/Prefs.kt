@@ -47,6 +47,19 @@ class Prefs(context: Context) {
         get() = sp.getLong("lastExportAt", 0L)
         set(v) = sp.edit().putLong("lastExportAt", v).apply()
 
+    /** 구글/삼성 음성 인식을 함께 쓸지 (처음 버전에서 잘 되던 인식기). 소리가 날 때만 잠깐 사용 */
+    var useSystemRecognizer: Boolean
+        get() = sp.getBoolean("useSystem", true)
+        set(v) = sp.edit().putBoolean("useSystem", v).apply()
+
+    /** 테스트 모드가 끝나는 시각 (이 시각 전까지는 시간·충전 조건을 무시하고 듣는다) */
+    var testUntil: Long
+        get() = sp.getLong("testUntil", 0L)
+        set(v) = sp.edit().putLong("testUntil", v).apply()
+
+    val inTestMode: Boolean
+        get() = System.currentTimeMillis() < testUntil
+
     fun inSchedule(now: Calendar = Calendar.getInstance()): Boolean {
         if (!scheduleOn) return true
         val m = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
@@ -61,6 +74,13 @@ class Prefs(context: Context) {
 
     /** 다음에 시간 조건이 바뀌는 시각 (밀리초). 시간 설정을 안 쓰면 null */
     fun nextBoundaryMillis(): Long? {
+        val t = testUntil
+        val test = if (t > System.currentTimeMillis()) t + 1000 else null
+        val sched = scheduleBoundary()
+        return listOfNotNull(test, sched).minOrNull()
+    }
+
+    private fun scheduleBoundary(): Long? {
         if (!scheduleOn || startMin == endMin) return null
         val now = Calendar.getInstance()
         var best: Long? = null

@@ -33,6 +33,13 @@ class MainActivity : Activity() {
     private lateinit var startTimeButton: Button
     private lateinit var endTimeButton: Button
     private lateinit var batteryInfo: TextView
+    private lateinit var heard: TextView
+    private val ticker = object : Runnable {
+        override fun run() {
+            refresh()
+            status.postDelayed(this, 1000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -91,6 +98,19 @@ class MainActivity : Activity() {
             ListenService.recheck(this)
             status.postDelayed({ refresh() }, 300)
         }
+        val sysBox = bigCheck("구글/삼성 음성 인식 함께 쓰기 (더 정확함)", prefs.useSystemRecognizer) {
+            prefs.useSystemRecognizer = it
+        }
+        val testButton2 = bigButton("10분 테스트 모드 (시간·충전 조건 무시)") {
+            prefs.testUntil = System.currentTimeMillis() + 10 * 60 * 1000
+            if (ListenService.isRunning) ListenService.recheck(this) else startListening()
+        }
+        heard = TextView(this).apply {
+            textSize = 22f
+            setTextColor(Color.rgb(255, 220, 120))
+            gravity = Gravity.CENTER
+            setPadding(16, 8, 16, 24)
+        }
         val recBox = bigCheck("다른 소리 녹음해 두기 (날짜별)", prefs.saveRecordings) {
             prefs.saveRecordings = it
         }
@@ -105,8 +125,10 @@ class MainActivity : Activity() {
 
         col.addView(title)
         col.addView(status)
+        col.addView(heard)
+        col.addView(testButton2, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         col.addView(sectionLabel("배터리 절약"))
-        for (v in listOf(chargeBox, ecoBox, scheduleBox, startTimeButton, endTimeButton, batteryInfo)) {
+        for (v in listOf(chargeBox, ecoBox, sysBox, scheduleBox, startTimeButton, endTimeButton, batteryInfo)) {
             col.addView(
                 v,
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -148,7 +170,13 @@ class MainActivity : Activity() {
             // 준비가 다 되어 있으면 앱을 열기만 해도 자동으로 시작
             ListenService.start(this)
         }
-        status.postDelayed({ refresh() }, 300)
+        status.removeCallbacks(ticker)
+        status.postDelayed(ticker, 300)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        status.removeCallbacks(ticker)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -171,6 +199,8 @@ class MainActivity : Activity() {
         val missing = missingPermissions()
         val fs = canFullScreen()
         fullScreenButton.visibility = if (fs) View.GONE else View.VISIBLE
+        val h = ListenService.lastHeard
+        heard.text = if (h.isEmpty()) "마지막으로 들은 말: (아직 없음)" else "마지막으로 들은 말: $h"
         val report = prefs.lastBatteryReport
         batteryInfo.text = if (report.isEmpty()) {
             "배터리 측정: 충전기 없이 30분 넘게 들으면 여기에 실제 사용량이 표시돼요."
@@ -184,6 +214,10 @@ class MainActivity : Activity() {
                 "알림 권한이 필요해요.\n(듣고 있다는 표시와 조명을 띄우는 데 써요)"
             !fs ->
                 "화면이 꺼져 있을 때 불을 켜려면\n'전체 화면 알림' 허용이 필요해요.\n아래 ① 버튼을 눌러 켜 주세요."
+            ListenService.isRunning && prefs.inTestMode -> {
+                val left = (prefs.testUntil - System.currentTimeMillis()) / 1000
+                "🧪 테스트 모드 (${left / 60}분 ${left % 60}초 남음)\n\"불켜\" / \"불꺼\" 라고 말해 보세요."
+            }
             ListenService.isRunning && ListenService.isActive ->
                 "✅ 듣고 있어요.\n\n이제 앱을 닫아도 돼요.\n\"불켜\" / \"불꺼\" 라고 말하세요."
             ListenService.isRunning ->

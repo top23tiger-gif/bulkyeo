@@ -17,10 +17,15 @@ import android.os.BatteryManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.os.SystemClock
 import org.json.JSONObject
 import org.vosk.LibVosk
@@ -28,6 +33,9 @@ import org.vosk.LogLevel
 import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.LinkedBlockingQueue
 import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -134,7 +142,8 @@ class ListenService : Service() {
         val plugged = Prefs.isPluggedIn(this)
         val chargeOk = !prefs.chargingOnly || plugged
         val timeOk = prefs.inSchedule()
-        val shouldListen = chargeOk && timeOk
+        val test = prefs.inTestMode
+        val shouldListen = (chargeOk && timeOk) || test
 
         if (shouldListen) {
             // 효율 모드가 바뀌었으면 새 샘플링 레이트로 다시 시작
@@ -156,6 +165,7 @@ class ListenService : Service() {
         }.start()
 
         val text = when {
+            test -> "테스트 모드 · 듣고 있어요 (시간·충전 조건 무시)"
             shouldListen -> "듣고 있어요" + (if (prefs.ecoMode) " (효율 모드)" else "") + " · \"불켜\" / \"불꺼\""
             !timeOk -> "쉬는 중 · ${Prefs.fmt(prefs.startMin)}부터 들어요"
             else -> "쉬는 중 · 충전기를 꽂으면 들어요"
@@ -280,6 +290,7 @@ class ListenService : Service() {
             var speechFrames = 0
             var quietFrames = 0
             val segment = ArrayList<ShortArray>() // 녹음용: 소리가 난 구간
+            var sys: SysSession? = null           // 구글/삼성 음성 인식 (소리가 날 때만)
 
             try {
                 ar.startRecording()
@@ -308,9 +319,11 @@ class ListenService : Service() {
                             quietFrames = 0
                             rec.reset()
                             segment.clear()
+                            sys = if (systemAvailable()) SysSession(rate).also { it.start() } else null
                             for (f in ring) {
                                 rec.acceptWaveForm(f, f.size)
                                 segment.add(f)
+                                sys?.write(f)
                             }
                             ring.clear()
                         }
@@ -318,11 +331,14 @@ class ListenService : Service() {
                         // 목소리가 들릴 때만: 음성 인식
                         speechFrames++
                         segment.add(buf)
+                        sys?.write(buf)
                         quietFrames = if (db > noiseFloor + TRIGGER_DB / 2) 0 else quietFrames + 1
                         val done = rec.acceptWaveForm(buf, n)
                         var text = if (done) textOf(rec.result, "text") else textOf(rec.partialResult, "partial")
-                        if (handle(text)) {
+                        if (handle(text, "기기")) {
                             // 명령은 녹음하지 않는다
+                            sys?.cancel()
+                            sys = null
                             inSpeech = false
                             segment.clear()
                             rec.reset()
@@ -330,11 +346,17 @@ class ListenService : Service() {
                         }
                         if (quietFrames >= END_QUIET || speechFrames >= MAX_SPEECH) {
                             text = textOf(rec.finalResult, "text")
-                            if (!handle(text) && prefs.saveRecordings && speechFrames >= MIN_SAVE) {
-                                try {
-                                    Recordings.save(this@ListenService, segment, rate)
-                                } catch (_: Exception) {
-                                }
+                            val voskCmd = handle(text, "기기")
+                            if (!voskCmd && text.isNotBlank()) lastHeard = "[기기] $text"
+                            val seg = ArrayList(segment)
+                            val save = !voskCmd && prefs.saveRecordings && speechFrames >= MIN_SAVE
+                            val s = sys
+                            sys = null
+                            when {
+                                voskCmd -> s?.cancel()
+                                // 구글 인식 결과까지 보고 명령이 아니면 녹음 저장
+                                s != null -> s.endAudio { found -> if (!found && save) saveAsync(seg, rate) }
+                                save -> saveAsync(seg, rate)
                             }
                             segment.clear()
                             inSpeech = false
@@ -345,6 +367,7 @@ class ListenService : Service() {
             } catch (_: InterruptedException) {
             } catch (_: Exception) {
             } finally {
+                sys?.cancel()
                 try {
                     ar.stop()
                 } catch (_: Exception) {
@@ -368,10 +391,170 @@ class ListenService : Service() {
         ""
     }
 
-    /** 명령이면 실행하고 true. 인식된 말은 저장하지 않는다. */
-    private fun handle(text: String): Boolean {
+    private fun saveAsync(seg: List<ShortArray>, rate: Int) {
+        Thread {
+            try {
+                Recordings.save(this, seg, rate)
+            } catch (_: Exception) {
+            }
+        }.start()
+    }
+
+    // ------------------------------------------------------------ 구글/삼성 음성 인식 (소리가 날 때만)
+
+    @Volatile
+    private var sysFailures = 0
+
+    @Volatile
+    private var sysSuccesses = 0
+
+    private fun systemAvailable(): Boolean =
+        Build.VERSION.SDK_INT >= 33 && prefs.useSystemRecognizer &&
+            !(sysFailures >= 3 && sysSuccesses == 0) &&
+            SpeechRecognizer.isRecognitionAvailable(this)
+
+    /**
+     * 우리 앱이 녹음한 소리(말 시작 0.8초 전부터)를 파이프로 음성 인식기에 넘겨 준다.
+     * 그래서 말 첫 부분을 놓치지 않고, 마이크를 두 번 열지 않는다.
+     * 인식기 호출은 모두 메인 스레드에서 한다.
+     */
+    private inner class SysSession(private val rate: Int) {
+        private val queue = LinkedBlockingQueue<ShortArray>()
+        private val end = ShortArray(0)
+        private var pipe: Array<ParcelFileDescriptor>? = null
+        private var sr: SpeechRecognizer? = null
+        private var finished = false
+        private var found = false
+        private var onDone: ((Boolean) -> Unit)? = null
+        private val timeout = Runnable { finish(false) }
+
+        fun start() = main.post { begin() }
+
+        fun write(f: ShortArray) {
+            queue.offer(f)
+        }
+
+        /** 소리 끝. 결과가 나오면 [cb] (명령을 찾았는지) 호출 */
+        fun endAudio(cb: (Boolean) -> Unit) {
+            queue.offer(end)
+            main.post {
+                if (finished) cb(found) else onDone = cb
+            }
+        }
+
+        fun cancel() {
+            queue.offer(end)
+            main.post {
+                onDone = null
+                finish(false)
+            }
+        }
+
+        private fun begin() {
+            if (finished) return
+            try {
+                val p = ParcelFileDescriptor.createPipe()
+                pipe = p
+                Thread {
+                    try {
+                        ParcelFileDescriptor.AutoCloseOutputStream(p[1]).use { out ->
+                            while (true) {
+                                val f = queue.take()
+                                if (f === end) break
+                                val bb = ByteBuffer.allocate(f.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+                                for (x in f) bb.putShort(x)
+                                out.write(bb.array())
+                            }
+                        }
+                    } catch (_: Exception) {
+                    }
+                }.apply { isDaemon = true }.start()
+
+                val r = SpeechRecognizer.createSpeechRecognizer(this@ListenService)
+                sr = r
+                r.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {}
+                    override fun onBeginningOfSpeech() {}
+                    override fun onRmsChanged(rmsdB: Float) {}
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+                    override fun onEndOfSpeech() {}
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        if (checkResults(partialResults)) finish(true)
+                    }
+                    override fun onResults(results: Bundle?) {
+                        checkResults(results)
+                        sysSuccesses++
+                        finish(true)
+                    }
+                    override fun onError(error: Int) {
+                        val normal = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                            error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                        if (normal) sysSuccesses++ else sysFailures++
+                        finish(normal)
+                    }
+                })
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, p[0])
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, 1)
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, rate)
+                }
+                r.startListening(intent)
+                main.postDelayed(timeout, 10_000)
+            } catch (e: Exception) {
+                sysFailures++
+                finish(false)
+            }
+        }
+
+        private fun checkResults(b: Bundle?): Boolean {
+            val texts = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return false
+            texts.firstOrNull()?.let { if (it.isNotBlank()) lastHeard = "[구글] $it" }
+            for (t in texts) {
+                if (handle(t, "구글")) {
+                    found = true
+                    return true
+                }
+            }
+            return false
+        }
+
+        private fun finish(@Suppress("UNUSED_PARAMETER") ok: Boolean) {
+            if (finished) return
+            finished = true
+            queue.offer(end)
+            main.removeCallbacks(timeout)
+            sr?.let {
+                try {
+                    it.cancel()
+                    it.destroy()
+                } catch (_: Exception) {
+                }
+            }
+            sr = null
+            pipe?.let {
+                try {
+                    it[0].close()
+                } catch (_: Exception) {
+                }
+            }
+            pipe = null
+            onDone?.invoke(found)
+            onDone = null
+        }
+    }
+
+    /** 명령이면 실행하고 true. 인식된 말은 저장하지 않는다 (화면에 마지막 말만 잠깐 보여 줌). */
+    private fun handle(text: String, engine: String): Boolean {
         if (text.isBlank()) return false
         val on = Commands.parse(text) ?: return false
+        lastHeard = "[$engine] $text → " + (if (on) "켜기" else "끄기")
         val now = SystemClock.elapsedRealtime()
         if (now - lastCommandAt < 1500) return true
         lastCommandAt = now
@@ -459,11 +642,15 @@ class ListenService : Service() {
         private const val RATE = 16000          // 보통 모드
         private const val ECO_RATE = 8000       // 배터리 효율 모드
         private const val PRE_ROLL = 8          // 말 시작 전 0.8초 기억
-        private const val TRIGGER_DB = 12.0     // 주변 소음보다 이만큼 크면 "목소리" 로 봄
-        private const val MIN_TRIGGER_DB = -50.0
+        private const val TRIGGER_DB = 10.0     // 주변 소음보다 이만큼 크면 "목소리" 로 봄
+        private const val MIN_TRIGGER_DB = -55.0
         private const val END_QUIET = 10        // 1초 조용하면 끝
         private const val MAX_SPEECH = 50       // 최대 5초까지만 인식
         private const val MIN_SAVE = 3          // 0.3초보다 짧은 소리는 녹음하지 않음
+
+        /** 마지막으로 들은 말 (화면 표시용, 저장하지 않음) */
+        @Volatile
+        var lastHeard = ""
 
         /** 서비스가 켜져 있음 (쉬는 중 포함) */
         @Volatile

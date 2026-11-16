@@ -4,17 +4,19 @@ import java.lang.ref.WeakReference
 
 /** 인식된 문장을 "켜기 / 끄기" 명령으로 바꾼다. 인식된 문장은 어디에도 저장하지 않는다. */
 object Commands {
-    private val LIGHT_WORDS = listOf("불", "라이트", "조명", "전등")
-    private val ON_WORDS = listOf("켜", "키라", "키어", "밝게")
-    private val OFF_WORDS = listOf("꺼", "끄라", "끄어", "어둡게")
+    // "불" 처럼 들릴 수 있는 말 + "켜/꺼" 처럼 들릴 수 있는 말 (인식기가 조금 틀려도 알아듣도록)
+    private const val LIGHT = "(불|뿔|풀|볼|전등|조명|라이트)"
+    private val ON = Regex("$LIGHT(좀|을|를)?(켜|껴|켰|키|커|켜줘|켜요)")
+    private val OFF = Regex("$LIGHT(좀|을|를)?(꺼|껐|끄|거|꺼줘|꺼요)")
+    private val ON_ALONE = setOf("켜", "켜줘", "켜요", "켜라", "불켜", "밝게")
+    private val OFF_ALONE = setOf("꺼", "꺼줘", "꺼요", "꺼라", "불꺼", "어둡게")
 
     /** true = 켜기, false = 끄기, null = 명령 아님 */
     fun parse(text: String): Boolean? {
-        val s = text.replace(" ", "")
-        val hasLightWord = LIGHT_WORDS.any { s.contains(it) } || s.length <= 3
-        if (!hasLightWord) return null
-        if (OFF_WORDS.any { s.contains(it) }) return false
-        if (ON_WORDS.any { s.contains(it) }) return true
+        val s = text.replace(" ", "").replace(".", "").replace("!", "")
+        if (s.isEmpty()) return null
+        if (s in OFF_ALONE || OFF.containsMatchIn(s)) return false
+        if (s in ON_ALONE || ON.containsMatchIn(s)) return true
         return null
     }
 }
