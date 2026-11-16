@@ -38,7 +38,7 @@ class LightActivity : Activity() {
             setBackgroundColor(Color.WHITE)
             setOnClickListener {
                 val now = SystemClock.elapsedRealtime()
-                if (now - lastTapAt < 400) finish()
+                if (now - lastTapAt < 400) finishAndRemoveTask()
                 lastTapAt = now
             }
         }

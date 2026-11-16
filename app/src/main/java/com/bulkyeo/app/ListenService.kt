@@ -568,6 +568,17 @@ class ListenService : Service() {
         if (LightState.isShowing) return
         val intent = Intent(this, LightActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+
+        // 1) 바로 조명 화면 열기: 앱 화면이 떠 있거나 "다른 앱 위에 표시" 가 허용돼 있으면 가능
+        val canDirect = LightState.mainVisible || android.provider.Settings.canDrawOverlays(this)
+        if (canDirect) {
+            try {
+                startActivity(intent)
+                return
+            } catch (_: Exception) {
+            }
+        }
+        // 2) 안 되면 "전체 화면 알림" 으로 (화면이 꺼져 있거나 잠겨 있을 때 동작)
         val pi = PendingIntent.getActivity(
             this, 1, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -587,9 +598,11 @@ class ListenService : Service() {
         getSystemService(NotificationManager::class.java).notify(NOTI_LIGHT, n)
     }
 
+    /** "불꺼": 조명 화면과 앱 화면을 모두 닫는다 (듣기는 뒤에서 계속해서 다음 "불켜" 를 기다림) */
     private fun lightOff() {
         getSystemService(NotificationManager::class.java).cancel(NOTI_LIGHT)
-        LightState.activity?.get()?.finish()
+        LightState.activity?.get()?.finishAndRemoveTask()
+        LightState.main?.get()?.finishAndRemoveTask()
     }
 
     // ------------------------------------------------------------ 알림

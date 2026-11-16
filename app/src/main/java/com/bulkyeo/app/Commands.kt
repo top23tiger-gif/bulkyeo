@@ -25,6 +25,12 @@ object Commands {
 object LightState {
     var activity: WeakReference<LightActivity>? = null
 
+    /** 설정 화면 ("불꺼" 때 같이 닫는다) */
+    var main: WeakReference<MainActivity>? = null
+
+    @Volatile
+    var mainVisible = false
+
     val isShowing: Boolean
         get() = activity?.get()?.let { !it.isFinishing && !it.isDestroyed } == true
 }

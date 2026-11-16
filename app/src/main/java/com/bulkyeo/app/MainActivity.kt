@@ -28,6 +28,7 @@ class MainActivity : Activity() {
 
     private lateinit var status: TextView
     private lateinit var fullScreenButton: Button
+    private lateinit var overlayButton: Button
     private var askedPermissions = false
     private lateinit var prefs: Prefs
     private lateinit var startTimeButton: Button
@@ -64,6 +65,13 @@ class MainActivity : Activity() {
             setPadding(0, 48, 0, 48)
         }
         fullScreenButton = bigButton("① 전체 화면 알림 허용하기") { openFullScreenSettings() }
+        overlayButton = bigButton("② 다른 앱 위에 표시 허용하기 (불켜 때 바로 하얀 화면)") {
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            }
+        }
         val startButton = bigButton("시작 (앱을 닫아도 계속 들어요)") { startListening() }
         val stopButton = bigButton("중지") {
             ListenService.stop(this)
@@ -144,7 +152,7 @@ class MainActivity : Activity() {
             )
         }
         col.addView(sectionLabel("동작"))
-        for (b in listOf(fullScreenButton, startButton, stopButton, testButton, batteryButton)) {
+        for (b in listOf(fullScreenButton, overlayButton, startButton, stopButton, testButton, batteryButton)) {
             col.addView(
                 b,
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -159,6 +167,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        LightState.main = java.lang.ref.WeakReference(this)
+        LightState.mainVisible = true
         val missing = missingPermissions()
         if (missing.isNotEmpty()) {
             // 권한 창은 화면을 열 때 한 번만 자동으로 띄운다 (거절하면 '시작' 을 눌러 다시)
@@ -176,6 +186,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         super.onPause()
+        LightState.mainVisible = false
         status.removeCallbacks(ticker)
     }
 
@@ -199,6 +210,8 @@ class MainActivity : Activity() {
         val missing = missingPermissions()
         val fs = canFullScreen()
         fullScreenButton.visibility = if (fs) View.GONE else View.VISIBLE
+        val overlay = Settings.canDrawOverlays(this)
+        overlayButton.visibility = if (overlay) View.GONE else View.VISIBLE
         val h = ListenService.lastHeard
         heard.text = if (h.isEmpty()) "마지막으로 들은 말: (아직 없음)" else "마지막으로 들은 말: $h"
         val report = prefs.lastBatteryReport
@@ -212,6 +225,8 @@ class MainActivity : Activity() {
                 "마이크 권한이 필요해요.\n설정 > 애플리케이션 > 불켜 > 권한 에서\n마이크를 허용해 주세요."
             missing.isNotEmpty() ->
                 "알림 권한이 필요해요.\n(듣고 있다는 표시와 조명을 띄우는 데 써요)"
+            !overlay ->
+                "\"불켜\" 때 바로 하얀 화면이 뜨려면\n'다른 앱 위에 표시' 허용이 필요해요.\n아래 ② 버튼을 눌러 「불켜」를 켜 주세요."
             !fs ->
                 "화면이 꺼져 있을 때 불을 켜려면\n'전체 화면 알림' 허용이 필요해요.\n아래 ① 버튼을 눌러 켜 주세요."
             ListenService.isRunning && prefs.inTestMode -> {
