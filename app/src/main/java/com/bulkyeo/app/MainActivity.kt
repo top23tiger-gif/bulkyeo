@@ -242,6 +242,7 @@ class MainActivity : Activity() {
         }
 
         override fun onError(error: Int) {
+            val self: RecognitionListener = this
             when (error) {
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
                 SpeechRecognizer.ERROR_CLIENT -> {
@@ -249,7 +250,7 @@ class MainActivity : Activity() {
                     listening = false
                     recognizer?.destroy()
                     recognizer = SpeechRecognizer.createSpeechRecognizer(this@MainActivity).apply {
-                        setRecognitionListener(this@MainActivity.listener)
+                        setRecognitionListener(self)
                     }
                     scheduleRestart(1000)
                 }
