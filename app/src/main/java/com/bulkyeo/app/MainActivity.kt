@@ -3,6 +3,7 @@ package com.bulkyeo.app
 import android.Manifest
 import android.app.Activity
 import android.app.NotificationManager
+import android.app.TimePickerDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -14,6 +15,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -27,9 +29,13 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var fullScreenButton: Button
     private var askedPermissions = false
+    private lateinit var prefs: Prefs
+    private lateinit var startTimeButton: Button
+    private lateinit var endTimeButton: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prefs = Prefs(this)
 
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -64,8 +70,33 @@ class MainActivity : Activity() {
             )
         }
 
+        // ---- 배터리 절약 설정
+        val chargeBox = bigCheck("충전기에 꽂혀 있을 때만 듣기", prefs.chargingOnly) {
+            prefs.chargingOnly = it
+            ListenService.recheck(this)
+            status.postDelayed({ refresh() }, 300)
+        }
+        startTimeButton = bigButton("") { pickTime(true) }
+        endTimeButton = bigButton("") { pickTime(false) }
+        val scheduleBox = bigCheck("정해 둔 시간에만 듣기", prefs.scheduleOn) {
+            prefs.scheduleOn = it
+            updateTimeButtons()
+            ListenService.recheck(this)
+            status.postDelayed({ refresh() }, 300)
+        }
+        updateTimeButtons()
+
         col.addView(title)
         col.addView(status)
+        col.addView(sectionLabel("배터리 절약"))
+        for (v in listOf(chargeBox, scheduleBox, startTimeButton, endTimeButton)) {
+            col.addView(
+                v,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = 16 }
+            )
+        }
+        col.addView(sectionLabel("동작"))
         for (b in listOf(fullScreenButton, startButton, stopButton, testButton, batteryButton)) {
             col.addView(
                 b,
@@ -122,11 +153,53 @@ class MainActivity : Activity() {
                 "알림 권한이 필요해요.\n(듣고 있다는 표시와 조명을 띄우는 데 써요)"
             !fs ->
                 "화면이 꺼져 있을 때 불을 켜려면\n'전체 화면 알림' 허용이 필요해요.\n아래 ① 버튼을 눌러 켜 주세요."
-            ListenService.isRunning ->
+            ListenService.isRunning && ListenService.isActive ->
                 "✅ 듣고 있어요.\n\n이제 앱을 닫아도 돼요.\n\"불켜\" / \"불꺼\" 라고 말하세요."
+            ListenService.isRunning ->
+                "✅ 준비됐어요 (지금은 쉬는 중).\n\n" + waitReason() + "\n이제 앱을 닫아도 돼요."
             else ->
                 "멈춰 있어요.\n'시작' 을 눌러 주세요."
         }
+    }
+
+    private fun waitReason(): String = when {
+        !prefs.inSchedule() -> "${Prefs.fmt(prefs.startMin)}부터 자동으로 들어요."
+        prefs.chargingOnly && !Prefs.isPluggedIn(this) -> "충전기를 꽂으면 자동으로 들어요."
+        else -> ""
+    }
+
+    private fun updateTimeButtons() {
+        startTimeButton.text = "시작 시각: ${Prefs.fmt(prefs.startMin)}"
+        endTimeButton.text = "끝 시각: ${Prefs.fmt(prefs.endMin)}"
+        val v = if (prefs.scheduleOn) View.VISIBLE else View.GONE
+        startTimeButton.visibility = v
+        endTimeButton.visibility = v
+    }
+
+    private fun pickTime(isStart: Boolean) {
+        val cur = if (isStart) prefs.startMin else prefs.endMin
+        TimePickerDialog(this, { _, h, m ->
+            if (isStart) prefs.startMin = h * 60 + m else prefs.endMin = h * 60 + m
+            updateTimeButtons()
+            ListenService.recheck(this)
+            status.postDelayed({ refresh() }, 300)
+        }, cur / 60, cur % 60, false).show()
+    }
+
+    private fun sectionLabel(t: String) = TextView(this).apply {
+        text = t
+        textSize = 20f
+        setTextColor(Color.rgb(150, 150, 150))
+        setPadding(0, 48, 0, 0)
+    }
+
+    private fun bigCheck(label: String, checked: Boolean, onChange: (Boolean) -> Unit) = CheckBox(this).apply {
+        text = label
+        textSize = 22f
+        setTextColor(Color.WHITE)
+        isChecked = checked
+        setPadding(16, 24, 16, 24)
+        setOnCheckedChangeListener { _, c -> onChange(c) }
     }
 
     private fun missingPermissions(): List<String> {

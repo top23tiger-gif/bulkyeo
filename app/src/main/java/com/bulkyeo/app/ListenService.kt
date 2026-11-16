@@ -1,51 +1,63 @@
 package com.bulkyeo.app
 
+import android.annotation.SuppressLint
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.media.AudioManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Build
-import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
+import org.json.JSONObject
+import org.vosk.LibVosk
+import org.vosk.LogLevel
+import org.vosk.Model
+import org.vosk.Recognizer
+import java.io.File
+import kotlin.math.log10
+import kotlin.math.max
+import kotlin.math.sqrt
 
 /**
- * 앱을 닫아도 계속 "불켜 / 불꺼" 를 듣는 서비스.
+ * 앱을 닫아도 "불켜 / 불꺼" 를 듣는 서비스. 배터리를 아끼기 위해:
  *
- * - 안드로이드 규칙상 마이크를 쓰는 동안 알림이 항상 표시된다 (몰래 듣지 않는다는 표시).
- * - 가능하면 기기 안에서만 음성을 인식한다 (소리가 인터넷으로 나가지 않음).
- * - 인식한 말은 저장하지 않고, 명령인지 확인한 뒤 바로 버린다.
+ *  1. 충전 중일 때만, 그리고 정해 둔 시간에만 마이크를 쓴다. 그 밖에는 완전히 쉰다.
+ *  2. 마이크를 쓰는 동안에도 평소에는 "소리 크기" 만 가볍게 본다.
+ *     목소리 정도의 소리가 날 때만 음성 인식을 잠깐 돌린다.
+ *  3. 음성 인식은 기기 안에서만 한다 (인터넷 사용 안 함, 들은 말은 저장 안 함).
  */
 class ListenService : Service() {
 
-    private val handler = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
-    private var useOnDevice = true
-    private var listening = false
-    private var running = false
-    private var lastCommandAt = 0L
-    private var wakeLock: PowerManager.WakeLock? = null
-
-    private lateinit var audio: AudioManager
+    private val main = Handler(Looper.getMainLooper())
+    private lateinit var prefs: Prefs
     private lateinit var power: PowerManager
-    private val mutedStreams = mutableListOf<Int>()
+
+    private var worker: Worker? = null
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var receiverOn = false
+    private var lastCommandAt = 0L
+
+    @Volatile
+    private var model: Model? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        audio = getSystemService(AudioManager::class.java)
+        prefs = Prefs(this)
         power = getSystemService(PowerManager::class.java)
         createChannels()
     }
@@ -55,134 +67,253 @@ class ListenService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        try {
-            startForeground(NOTI_LISTEN, listeningNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } catch (e: Exception) {
-            // 안드로이드 14+ 에서는 앱 화면이 떠 있을 때만 마이크 서비스를 시작할 수 있다
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        if (!running) {
-            running = true
-            isRunning = true
-            wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bulkyeo:listen").apply {
-                setReferenceCounted(false)
-                acquire()
+        if (!isRunning) {
+            try {
+                startForeground(NOTI_LISTEN, statusNotification("준비 중…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } catch (e: Exception) {
+                // 안드로이드 14+ 에서는 앱 화면이 떠 있을 때만 마이크 서비스를 시작할 수 있다
+                stopSelf()
+                return START_NOT_STICKY
             }
-            createRecognizer()
-            listen()
         }
+        isRunning = true
+        registerPowerReceiver()
+        evaluate()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        running = false
         isRunning = false
-        handler.removeCallbacksAndMessages(null)
-        recognizer?.let {
-            it.cancel()
-            it.destroy()
+        isActive = false
+        val w = worker
+        stopWorker()
+        if (receiverOn) {
+            unregisterReceiver(powerReceiver)
+            receiverOn = false
         }
-        recognizer = null
-        setMuted(false)
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wakeLock = null
+        getSystemService(AlarmManager::class.java).cancel(checkIntent())
+        // 듣기 스레드가 완전히 끝났을 때만 모델을 닫는다
+        if (w == null || !w.isAlive) {
+            model?.close()
+            model = null
+        }
         super.onDestroy()
     }
 
-    // ------------------------------------------------------------ 음성 인식
+    // ------------------------------------------------------------ 언제 들을지 결정
 
-    private fun createRecognizer() {
-        recognizer?.destroy()
-        val onDevice = useOnDevice && Build.VERSION.SDK_INT >= 31 &&
-            SpeechRecognizer.isOnDeviceRecognitionAvailable(this)
-        if (!onDevice) useOnDevice = false
-        recognizer = (if (onDevice) {
-            SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
+    private val powerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            evaluate()
+        }
+    }
+
+    private fun registerPowerReceiver() {
+        if (receiverOn) return
+        val f = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED)
+            addAction(Intent.ACTION_POWER_DISCONNECTED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(powerReceiver, f, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            SpeechRecognizer.createSpeechRecognizer(this)
-        }).apply { setRecognitionListener(listener) }
+            registerReceiver(powerReceiver, f)
+        }
+        receiverOn = true
     }
 
-    private fun listen() {
-        if (!running || listening) return
-        // 밤(화면 꺼짐)이나 조명 화면일 때만 "띵" 소리를 끈다. 평소에는 소리를 건드리지 않는다.
-        setMuted(!power.isInteractive || LightState.isShowing)
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+    private fun evaluate() {
+        val plugged = Prefs.isPluggedIn(this)
+        val chargeOk = !prefs.chargingOnly || plugged
+        val timeOk = prefs.inSchedule()
+        val shouldListen = chargeOk && timeOk
+
+        if (shouldListen) startWorker() else stopWorker()
+        isActive = shouldListen
+
+        val text = when {
+            shouldListen -> "듣고 있어요 · \"불켜\" / \"불꺼\""
+            !timeOk -> "쉬는 중 · ${Prefs.fmt(prefs.startMin)}부터 들어요"
+            else -> "쉬는 중 · 충전기를 꽂으면 들어요"
         }
-        try {
-            recognizer?.startListening(intent)
-            listening = true
+        getSystemService(NotificationManager::class.java).notify(NOTI_LISTEN, statusNotification(text))
+        scheduleNextCheck()
+    }
+
+    /** 시간 설정의 시작/끝 시각에 다시 확인하도록 예약 (정확한 알람 권한 없이, 몇 분 늦을 수 있음) */
+    private fun scheduleNextCheck() {
+        val am = getSystemService(AlarmManager::class.java)
+        val pi = checkIntent()
+        am.cancel(pi)
+        val at = prefs.nextBoundaryMillis() ?: return
+        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+    }
+
+    private fun checkIntent(): PendingIntent = PendingIntent.getService(
+        this, 3, Intent(this, ListenService::class.java).setAction(ACTION_CHECK),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+    )
+
+    private fun startWorker() {
+        if (worker != null) return
+        wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bulkyeo:listen").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+        worker = Worker().also { it.start() }
+    }
+
+    private fun stopWorker() {
+        worker?.let {
+            it.running = false
+            it.interrupt()
+            try {
+                it.join(1500)
+            } catch (_: InterruptedException) {
+            }
+        }
+        worker = null
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+    }
+
+    // ------------------------------------------------------------ 듣기 (별도 스레드)
+
+    @Synchronized
+    private fun loadModel(): Model? {
+        model?.let { return it }
+        return try {
+            LibVosk.setLogLevel(LogLevel.WARNINGS)
+            val dir = ModelFiles.ensure(this)
+            Model(dir.absolutePath).also { model = it }
         } catch (e: Exception) {
-            restart(1000)
+            main.post {
+                getSystemService(NotificationManager::class.java)
+                    .notify(NOTI_LISTEN, statusNotification("음성 모델을 불러오지 못했어요"))
+            }
+            null
         }
     }
 
-    private fun restart(delayMs: Long) {
-        listening = false
-        handler.removeCallbacksAndMessages(null)
-        handler.postDelayed({ listen() }, delayMs)
-    }
+    private inner class Worker : Thread("bulkyeo-listen") {
+        @Volatile
+        var running = true
 
-    private val listener: RecognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+        @SuppressLint("MissingPermission")
+        override fun run() {
+            val m = loadModel() ?: return
+            val rec = try {
+                Recognizer(m, RATE.toFloat())
+            } catch (e: Exception) {
+                return
+            }
+            val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val ar = try {
+                AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                    max(minBuf, FRAME * 2 * 4)
+                )
+            } catch (e: Exception) {
+                rec.close()
+                return
+            }
+            if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                ar.release()
+                rec.close()
+                return
+            }
 
-        override fun onPartialResults(partialResults: Bundle?) {
-            handle(partialResults)
-        }
+            // 말 시작 부분을 놓치지 않도록 최근 0.8초 소리를 계속 기억해 둔다
+            val ring = ArrayDeque<ShortArray>()
+            var noiseFloor = -60.0
+            var inSpeech = false
+            var speechFrames = 0
+            var quietFrames = 0
 
-        override fun onResults(results: Bundle?) {
-            handle(results)
-            restart(200)
-        }
+            try {
+                ar.startRecording()
+                while (running) {
+                    val buf = ShortArray(FRAME)
+                    var n = 0
+                    while (n < FRAME && running) {
+                        val r = ar.read(buf, n, FRAME - n)
+                        if (r <= 0) break
+                        n += r
+                    }
+                    if (!running || n < FRAME) {
+                        if (n <= 0) Thread.sleep(200)
+                        continue
+                    }
+                    val db = levelDb(buf)
 
-        override fun onError(error: Int) {
-            when (error) {
-                ERROR_LANGUAGE_NOT_SUPPORTED, ERROR_LANGUAGE_UNAVAILABLE -> {
-                    // 기기 안 인식에 한국어가 없으면 일반 음성 인식으로 바꾼다
-                    useOnDevice = false
-                    listening = false
-                    createRecognizer()
-                    restart(500)
+                    if (!inSpeech) {
+                        // 조용할 때: 소리 크기만 확인 (아주 가벼움)
+                        ring.addLast(buf)
+                        if (ring.size > PRE_ROLL) ring.removeFirst()
+                        noiseFloor = if (db < noiseFloor) db else noiseFloor + 0.02 * (db - noiseFloor)
+                        if (db > max(noiseFloor + TRIGGER_DB, MIN_TRIGGER_DB)) {
+                            inSpeech = true
+                            speechFrames = 0
+                            quietFrames = 0
+                            rec.reset()
+                            for (f in ring) rec.acceptWaveForm(f, f.size)
+                            ring.clear()
+                        }
+                    } else {
+                        // 목소리가 들릴 때만: 음성 인식
+                        speechFrames++
+                        quietFrames = if (db > noiseFloor + TRIGGER_DB / 2) 0 else quietFrames + 1
+                        val done = rec.acceptWaveForm(buf, n)
+                        var text = if (done) textOf(rec.result, "text") else textOf(rec.partialResult, "partial")
+                        if (handle(text)) {
+                            inSpeech = false
+                            rec.reset()
+                            continue
+                        }
+                        if (quietFrames >= END_QUIET || speechFrames >= MAX_SPEECH) {
+                            text = textOf(rec.finalResult, "text")
+                            handle(text)
+                            inSpeech = false
+                            rec.reset()
+                        }
+                    }
                 }
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                SpeechRecognizer.ERROR_CLIENT -> {
-                    listening = false
-                    createRecognizer()
-                    restart(1000)
+            } catch (_: InterruptedException) {
+            } catch (_: Exception) {
+            } finally {
+                try {
+                    ar.stop()
+                } catch (_: Exception) {
                 }
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> stopSelf()
-                SpeechRecognizer.ERROR_AUDIO,
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
-                SpeechRecognizer.ERROR_SERVER,
-                ERROR_TOO_MANY_REQUESTS -> restart(3000)
-                else -> restart(200)
+                ar.release()
+                rec.close()
             }
         }
     }
 
-    private fun handle(bundle: Bundle?) {
-        val texts = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return
-        for (t in texts) {
-            val on = Commands.parse(t) ?: continue
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastCommandAt < 1500) return
-            lastCommandAt = now
-            if (on) lightOn() else lightOff()
-            return
-        }
+    private fun levelDb(buf: ShortArray): Double {
+        var sum = 0.0
+        for (s in buf) sum += s.toDouble() * s
+        val rms = sqrt(sum / buf.size)
+        return 20 * log10(max(rms, 1.0) / 32768.0)
+    }
+
+    private fun textOf(json: String, key: String): String = try {
+        JSONObject(json).optString(key, "")
+    } catch (e: Exception) {
+        ""
+    }
+
+    /** 명령이면 실행하고 true. 인식된 말은 저장하지 않는다. */
+    private fun handle(text: String): Boolean {
+        if (text.isBlank()) return false
+        val on = Commands.parse(text) ?: return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastCommandAt < 1500) return true
+        lastCommandAt = now
+        main.post { if (on) lightOn() else lightOff() }
+        return true
     }
 
     // ------------------------------------------------------------ 조명
@@ -195,7 +326,7 @@ class ListenService : Service() {
             this, 1, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        // 화면이 꺼져 있거나 잠겨 있을 때는 "전체 화면 알림" 으로 조명 화면을 띄운다 (알람 앱과 같은 방식)
+        // 화면이 꺼져 있거나 잠겨 있을 때 "전체 화면 알림" 으로 조명 화면을 띄운다 (알람 앱과 같은 방식)
         val n = Notification.Builder(this, CH_LIGHT)
             .setSmallIcon(R.drawable.ic_bulb)
             .setContentTitle("불을 켰어요")
@@ -215,12 +346,12 @@ class ListenService : Service() {
         LightState.activity?.get()?.finish()
     }
 
-    // ------------------------------------------------------------ 알림 / 소리
+    // ------------------------------------------------------------ 알림
 
     private fun createChannels() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
-            NotificationChannel(CH_LISTEN, "음성 듣는 중", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(CH_LISTEN, "음성 듣기 상태", NotificationManager.IMPORTANCE_LOW).apply {
                 setShowBadge(false)
             }
         )
@@ -234,7 +365,7 @@ class ListenService : Service() {
         )
     }
 
-    private fun listeningNotification(): Notification {
+    private fun statusNotification(text: String): Notification {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE
@@ -245,58 +376,84 @@ class ListenService : Service() {
         )
         return Notification.Builder(this, CH_LISTEN)
             .setSmallIcon(R.drawable.ic_bulb)
-            .setContentTitle("불켜: 듣고 있어요")
-            .setContentText("\"불켜\" / \"불꺼\" 라고 말하세요")
+            .setContentTitle("불켜")
+            .setContentText(text)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .addAction(Notification.Action.Builder(null, "중지", stop).build())
             .build()
     }
 
-    private fun setMuted(mute: Boolean) {
-        if (mute && mutedStreams.isEmpty()) {
-            for (s in intArrayOf(AudioManager.STREAM_MUSIC, AudioManager.STREAM_SYSTEM)) {
-                try {
-                    if (!audio.isStreamMute(s)) {
-                        audio.adjustStreamVolume(s, AudioManager.ADJUST_MUTE, 0)
-                        mutedStreams.add(s)
-                    }
-                } catch (_: Exception) {
-                }
-            }
-        } else if (!mute && mutedStreams.isNotEmpty()) {
-            for (s in mutedStreams) {
-                try {
-                    audio.adjustStreamVolume(s, AudioManager.ADJUST_UNMUTE, 0)
-                } catch (_: Exception) {
-                }
-            }
-            mutedStreams.clear()
-        }
-    }
-
     companion object {
         const val ACTION_STOP = "com.bulkyeo.app.STOP"
+        const val ACTION_CHECK = "com.bulkyeo.app.CHECK"
         const val NOTI_LISTEN = 1
         const val NOTI_LIGHT = 2
         private const val CH_LISTEN = "listen"
         private const val CH_LIGHT = "light"
 
-        // API 31 에 추가된 오류 코드 (minSdk 30 이라 숫자로 둔다)
-        private const val ERROR_TOO_MANY_REQUESTS = 10
-        private const val ERROR_LANGUAGE_NOT_SUPPORTED = 12
-        private const val ERROR_LANGUAGE_UNAVAILABLE = 13
+        private const val RATE = 16000
+        private const val FRAME = 1600          // 0.1초
+        private const val PRE_ROLL = 8          // 말 시작 전 0.8초 기억
+        private const val TRIGGER_DB = 12.0     // 주변 소음보다 이만큼 크면 "목소리" 로 봄
+        private const val MIN_TRIGGER_DB = -50.0
+        private const val END_QUIET = 10        // 1초 조용하면 끝
+        private const val MAX_SPEECH = 50       // 최대 5초까지만 인식
 
+        /** 서비스가 켜져 있음 (쉬는 중 포함) */
         @Volatile
         var isRunning = false
+            private set
+
+        /** 지금 실제로 마이크로 듣는 중 */
+        @Volatile
+        var isActive = false
             private set
 
         fun start(context: Context) {
             context.startForegroundService(Intent(context, ListenService::class.java))
         }
 
+        /** 설정이 바뀌었을 때 다시 판단하게 한다 */
+        fun recheck(context: Context) {
+            if (isRunning) {
+                context.startService(Intent(context, ListenService::class.java).setAction(ACTION_CHECK))
+            }
+        }
+
         fun stop(context: Context) {
             context.stopService(Intent(context, ListenService::class.java))
+        }
+    }
+}
+
+/** 앱에 들어 있는 음성 모델을 처음 한 번 앱 전용 저장소로 꺼내 둔다 */
+object ModelFiles {
+    private const val ASSET_DIR = "model-ko"
+    private const val VERSION = "ko-0.22"
+
+    @Synchronized
+    fun ensure(context: Context): File {
+        val dir = File(context.noBackupFilesDir, ASSET_DIR)
+        val mark = File(dir, ".ready-$VERSION")
+        if (mark.exists()) return dir
+        dir.deleteRecursively()
+        copy(context, ASSET_DIR, dir)
+        mark.createNewFile()
+        return dir
+    }
+
+    private fun copy(context: Context, assetPath: String, out: File) {
+        val children = context.assets.list(assetPath) ?: emptyArray()
+        if (children.isEmpty()) {
+            out.parentFile?.mkdirs()
+            context.assets.open(assetPath).use { input ->
+                out.outputStream().use { input.copyTo(it, 64 * 1024) }
+            }
+        } else {
+            out.mkdirs()
+            for (c in children) copy(context, "$assetPath/$c", File(out, c))
         }
     }
 }
