@@ -48,7 +48,17 @@ class RecordingsActivity : Activity() {
         openNight = null
         col.removeAllViews()
         col.addView(label("녹음 모음 (밤 기준 날짜)", 30f, Color.WHITE))
-        col.addView(label("\"불켜/불꺼\" 가 아닌 소리만 모았어요.\n이 탭 안, 이 앱 안에만 저장돼요.", 18f, Color.GRAY))
+        col.addView(label("\"불켜/불꺼\" 가 아닌 소리만 모았어요.\n일주일마다 자동으로 내 파일 > Recordings > 불켜 로 옮겨지고,\n옮겨진 녹음은 앱에서 지워져요.", 18f, Color.GRAY))
+        col.addView(button("지금 모두 기기 파일로 옮기기") {
+            val skip = if (ListenService.isActive) Recordings.nightKey() else null
+            Thread {
+                val n = Recordings.moveAll(this, skip)
+                runOnUiThread {
+                    Toast.makeText(this, "${n}개를 옮겼어요 (내 파일 > Recordings > 불켜)", Toast.LENGTH_LONG).show()
+                    showNights()
+                }
+            }.start()
+        })
         val nights = Recordings.nights(this)
         if (nights.isEmpty()) col.addView(label("아직 녹음이 없어요.", 22f, Color.LTGRAY))
         for (n in nights) {
@@ -61,10 +71,13 @@ class RecordingsActivity : Activity() {
         col.removeAllViews()
         col.addView(label(night.name, 30f, Color.WHITE))
         col.addView(button("← 날짜 목록") { showNights() })
-        col.addView(button("이 날짜 내보내기 (내 파일 > Recordings > 불켜)") {
+        col.addView(button("이 날짜 기기 파일로 옮기기") {
             Thread {
-                val n = Recordings.export(this, night)
-                runOnUiThread { Toast.makeText(this, "${n}개를 내보냈어요", Toast.LENGTH_LONG).show() }
+                val n = Recordings.moveNight(this, night)
+                runOnUiThread {
+                    Toast.makeText(this, "${n}개를 옮겼어요 (내 파일 > Recordings > 불켜 > ${night.name})", Toast.LENGTH_LONG).show()
+                    showNights()
+                }
             }.start()
         })
         col.addView(button("이 날짜 모두 지우기") {
@@ -79,7 +92,8 @@ class RecordingsActivity : Activity() {
         })
         for (f in Recordings.files(night)) {
             val sec = (f.length() - 44) / 2.0 / guessRate(f)
-            col.addView(button("▶ ${f.nameWithoutExtension.replace('-', ':')}  (${"%.1f".format(sec)}초)") { play(f) })
+            val time = f.nameWithoutExtension.substringAfter('_').replace('-', ':')
+            col.addView(button("▶ $time  (${"%.1f".format(sec)}초)") { play(f) })
         }
     }
 

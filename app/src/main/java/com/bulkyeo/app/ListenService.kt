@@ -146,6 +146,15 @@ class ListenService : Service() {
         if (plugged) batUnplugged = false // 측정 중에 충전기를 꽂으면 이번 측정은 무효
         isActive = shouldListen
 
+        // 일주일마다 녹음을 기기 파일로 옮긴다 (지금 듣는 밤은 제외)
+        val skip = if (shouldListen) Recordings.nightKey() else null
+        Thread {
+            try {
+                Recordings.weeklyMoveIfDue(this, prefs, skip)
+            } catch (_: Exception) {
+            }
+        }.start()
+
         val text = when {
             shouldListen -> "듣고 있어요" + (if (prefs.ecoMode) " (효율 모드)" else "") + " · \"불켜\" / \"불꺼\""
             !timeOk -> "쉬는 중 · ${Prefs.fmt(prefs.startMin)}부터 들어요"

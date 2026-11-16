@@ -16,9 +16,11 @@ import java.util.Locale
 /**
  * "불켜/불꺼" 가 아닌 소리를 날짜별 폴더에 WAV 로 모아 둔다.
  *
- * - 앱 전용 저장소에만 저장 (다른 앱은 읽을 수 없음, 백업되지 않음).
- * - 사용자가 "내보내기" 를 눌렀을 때만 내 파일 > Recordings > 불켜 로 복사한다.
- * - 날짜는 "밤 기준" (낮 12시 전 녹음은 전날 밤으로 묶음).
+ * - 먼저 앱 전용 저장소에 모아 둔다 (다른 앱은 읽을 수 없음, 백업되지 않음).
+ * - 일주일마다 이 기기의 파일(내 파일 > Recordings > 불켜 > 날짜 폴더)로 옮기고,
+ *   옮기기에 성공한 파일은 앱 안에서 지운다.
+ * - 폴더 이름: 날짜 (밤 기준, 낮 12시 전 녹음은 전날 밤 폴더)
+ * - 파일 이름: 실제 녹음한 날짜와 시간 (예: 2026-11-17_02-10-33.wav)
  */
 object Recordings {
     private const val DIR = "recordings"
@@ -38,7 +40,7 @@ object Recordings {
         val dir = File(root(context), nightKey(now))
         dir.mkdirs()
         if ((dir.list()?.size ?: 0) >= MAX_PER_NIGHT) return false
-        val name = SimpleDateFormat("HH-mm-ss", Locale.US).format(now.time)
+        val name = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now.time)
         var f = File(dir, "$name.wav")
         var i = 1
         while (f.exists()) f = File(dir, "$name-${i++}.wav")
@@ -72,8 +74,35 @@ object Recordings {
         return if (bytes > 1024 * 1024) "%.1fMB".format(bytes / 1024.0 / 1024.0) else "${bytes / 1024}KB"
     }
 
-    /** 내 파일 > Recordings(또는 Music) > 불켜 > 날짜 로 복사. 복사한 개수 */
-    fun export(context: Context, night: File): Int {
+    const val WEEK_MS = 7L * 24 * 60 * 60 * 1000
+
+    /**
+     * 일주일이 지났으면 모인 녹음을 모두 기기 파일로 옮긴다.
+     * [skipNight] 는 지금 녹음 중인 밤 (옮기지 않음).
+     */
+    fun weeklyMoveIfDue(context: Context, prefs: Prefs, skipNight: String?): Int {
+        val now = System.currentTimeMillis()
+        if (prefs.lastExportAt == 0L) prefs.lastExportAt = now // 설치 후 첫 주 시작
+        if (now - prefs.lastExportAt < WEEK_MS) return 0
+        val moved = moveAll(context, skipNight)
+        prefs.lastExportAt = now
+        return moved
+    }
+
+    /** 모든 날짜 폴더를 기기 파일로 옮긴다. 옮긴 개수 */
+    @Synchronized
+    fun moveAll(context: Context, skipNight: String?): Int {
+        var n = 0
+        for (night in nights(context)) {
+            if (night.name == skipNight) continue
+            n += moveNight(context, night)
+        }
+        return n
+    }
+
+    /** 한 날짜를 내 파일 > Recordings(또는 Music) > 불켜 > 날짜 로 옮긴다. 성공한 파일만 앱에서 지운다. */
+    @Synchronized
+    fun moveNight(context: Context, night: File): Int {
         val base = if (Build.VERSION.SDK_INT >= 31) Environment.DIRECTORY_RECORDINGS else Environment.DIRECTORY_MUSIC
         var n = 0
         for (f in files(night)) {
@@ -91,11 +120,13 @@ object Recordings {
                 values.clear()
                 values.put(MediaStore.Audio.Media.IS_PENDING, 0)
                 context.contentResolver.update(uri, values, null, null)
+                f.delete() // 기기 파일에 저장이 끝난 것만 앱에서 지움
                 n++
             } catch (e: Exception) {
                 context.contentResolver.delete(uri, null, null)
             }
         }
+        if (files(night).isEmpty()) night.deleteRecursively()
         return n
     }
 }

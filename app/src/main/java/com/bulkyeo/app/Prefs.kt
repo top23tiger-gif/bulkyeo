@@ -42,6 +42,11 @@ class Prefs(context: Context) {
         get() = sp.getString("lastBatteryReport", "") ?: ""
         set(v) = sp.edit().putString("lastBatteryReport", v).apply()
 
+    /** 마지막으로 녹음을 기기 파일로 옮긴 시각 */
+    var lastExportAt: Long
+        get() = sp.getLong("lastExportAt", 0L)
+        set(v) = sp.edit().putLong("lastExportAt", v).apply()
+
     fun inSchedule(now: Calendar = Calendar.getInstance()): Boolean {
         if (!scheduleOn) return true
         val m = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
