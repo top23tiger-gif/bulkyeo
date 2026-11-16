@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var prefs: Prefs
     private lateinit var startTimeButton: Button
     private lateinit var endTimeButton: Button
+    private lateinit var batteryInfo: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,11 +86,35 @@ class MainActivity : Activity() {
             status.postDelayed({ refresh() }, 300)
         }
         updateTimeButtons()
+        val ecoBox = bigCheck("배터리 효율 모드 (소리 센서 8kHz)", prefs.ecoMode) {
+            prefs.ecoMode = it
+            ListenService.recheck(this)
+            status.postDelayed({ refresh() }, 300)
+        }
+        val recBox = bigCheck("다른 소리 녹음해 두기 (날짜별)", prefs.saveRecordings) {
+            prefs.saveRecordings = it
+        }
+        val recButton = bigButton("녹음 모음 보기") {
+            startActivity(Intent(this, RecordingsActivity::class.java))
+        }
+        batteryInfo = TextView(this).apply {
+            textSize = 18f
+            setTextColor(Color.rgb(170, 170, 170))
+            setPadding(16, 16, 16, 0)
+        }
 
         col.addView(title)
         col.addView(status)
         col.addView(sectionLabel("배터리 절약"))
-        for (v in listOf(chargeBox, scheduleBox, startTimeButton, endTimeButton)) {
+        for (v in listOf(chargeBox, ecoBox, scheduleBox, startTimeButton, endTimeButton, batteryInfo)) {
+            col.addView(
+                v,
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = 16 }
+            )
+        }
+        col.addView(sectionLabel("녹음"))
+        for (v in listOf(recBox, recButton)) {
             col.addView(
                 v,
                 LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -146,6 +171,12 @@ class MainActivity : Activity() {
         val missing = missingPermissions()
         val fs = canFullScreen()
         fullScreenButton.visibility = if (fs) View.GONE else View.VISIBLE
+        val report = prefs.lastBatteryReport
+        batteryInfo.text = if (report.isEmpty()) {
+            "배터리 측정: 충전기 없이 30분 넘게 들으면 여기에 실제 사용량이 표시돼요."
+        } else {
+            "최근 측정: $report"
+        }
         status.text = when {
             Manifest.permission.RECORD_AUDIO in missing ->
                 "마이크 권한이 필요해요.\n설정 > 애플리케이션 > 불켜 > 권한 에서\n마이크를 허용해 주세요."

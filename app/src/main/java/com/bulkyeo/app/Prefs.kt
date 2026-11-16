@@ -18,14 +18,29 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("scheduleOn", true)
         set(v) = sp.edit().putBoolean("scheduleOn", v).apply()
 
-    /** 하루 중 분 (0..1439). 기본: 밤 10시 ~ 아침 7시 */
+    /** 하루 중 분 (0..1439). 기본: 밤 9시 ~ 아침 6시 */
     var startMin: Int
-        get() = sp.getInt("startMin", 22 * 60)
+        get() = sp.getInt("startMin", 21 * 60)
         set(v) = sp.edit().putInt("startMin", v).apply()
 
     var endMin: Int
-        get() = sp.getInt("endMin", 7 * 60)
+        get() = sp.getInt("endMin", 6 * 60)
         set(v) = sp.edit().putInt("endMin", v).apply()
+
+    /** 배터리 효율 모드: 소리 센서 샘플링 레이트를 16kHz -> 8kHz 로 낮춘다 */
+    var ecoMode: Boolean
+        get() = sp.getBoolean("ecoMode", false)
+        set(v) = sp.edit().putBoolean("ecoMode", v).apply()
+
+    /** "불켜/불꺼" 가 아닌 소리를 날짜별로 녹음해 둔다 */
+    var saveRecordings: Boolean
+        get() = sp.getBoolean("saveRecordings", true)
+        set(v) = sp.edit().putBoolean("saveRecordings", v).apply()
+
+    /** 마지막으로 측정한 배터리 사용 기록 (충전기 없이 들었던 구간) */
+    var lastBatteryReport: String
+        get() = sp.getString("lastBatteryReport", "") ?: ""
+        set(v) = sp.edit().putString("lastBatteryReport", v).apply()
 
     fun inSchedule(now: Calendar = Calendar.getInstance()): Boolean {
         if (!scheduleOn) return true

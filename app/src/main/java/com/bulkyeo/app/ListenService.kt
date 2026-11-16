@@ -13,6 +13,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
+import android.os.BatteryManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
@@ -35,9 +36,11 @@ import kotlin.math.sqrt
  * 앱을 닫아도 "불켜 / 불꺼" 를 듣는 서비스. 배터리를 아끼기 위해:
  *
  *  1. 충전 중일 때만, 그리고 정해 둔 시간에만 마이크를 쓴다. 그 밖에는 완전히 쉰다.
- *  2. 마이크를 쓰는 동안에도 평소에는 "소리 크기" 만 가볍게 본다.
+ *  2. 마이크를 쓰는 동안에도 평소에는 "소리 크기" 만 가볍게 본다 (항상 적용).
  *     목소리 정도의 소리가 날 때만 음성 인식을 잠깐 돌린다.
- *  3. 음성 인식은 기기 안에서만 한다 (인터넷 사용 안 함, 들은 말은 저장 안 함).
+ *  3. 배터리 효율 모드: 소리 센서 샘플링 레이트를 16kHz -> 8kHz 로 낮춘다.
+ *  4. 음성 인식은 기기 안에서만 한다 (인터넷 사용 안 함).
+ *     "불켜/불꺼" 가 아닌 소리는 (설정이 켜져 있으면) 앱 안에 날짜별로 녹음해 둔다.
  */
 class ListenService : Service() {
 
@@ -49,6 +52,11 @@ class ListenService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var receiverOn = false
     private var lastCommandAt = 0L
+
+    // 배터리 측정 (충전기 없이 들은 구간만)
+    private var batStartLevel = -1
+    private var batStartTime = 0L
+    private var batUnplugged = false
 
     @Volatile
     private var model: Model? = null
@@ -128,11 +136,18 @@ class ListenService : Service() {
         val timeOk = prefs.inSchedule()
         val shouldListen = chargeOk && timeOk
 
-        if (shouldListen) startWorker() else stopWorker()
+        if (shouldListen) {
+            // 효율 모드가 바뀌었으면 새 샘플링 레이트로 다시 시작
+            if (worker != null && worker?.rate != currentRate()) stopWorker()
+            startWorker()
+        } else {
+            stopWorker()
+        }
+        if (plugged) batUnplugged = false // 측정 중에 충전기를 꽂으면 이번 측정은 무효
         isActive = shouldListen
 
         val text = when {
-            shouldListen -> "듣고 있어요 · \"불켜\" / \"불꺼\""
+            shouldListen -> "듣고 있어요" + (if (prefs.ecoMode) " (효율 모드)" else "") + " · \"불켜\" / \"불꺼\""
             !timeOk -> "쉬는 중 · ${Prefs.fmt(prefs.startMin)}부터 들어요"
             else -> "쉬는 중 · 충전기를 꽂으면 들어요"
         }
@@ -154,16 +169,40 @@ class ListenService : Service() {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     )
 
+    private fun currentRate() = if (prefs.ecoMode) ECO_RATE else RATE
+
     private fun startWorker() {
         if (worker != null) return
         wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bulkyeo:listen").apply {
             setReferenceCounted(false)
             acquire()
         }
-        worker = Worker().also { it.start() }
+        worker = Worker(currentRate()).also { it.start() }
+        // 배터리 측정 시작
+        batStartLevel = batteryLevel()
+        batStartTime = System.currentTimeMillis()
+        batUnplugged = !Prefs.isPluggedIn(this)
+    }
+
+    private fun batteryLevel(): Int =
+        getSystemService(BatteryManager::class.java).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+
+    /** 충전기 없이 30분 넘게 들었으면 "몇 시간에 몇 % 썼는지" 기록 */
+    private fun finishBatteryMeasure() {
+        if (batStartLevel < 0) return
+        val hours = (System.currentTimeMillis() - batStartTime) / 3_600_000.0
+        val used = batStartLevel - batteryLevel()
+        if (batUnplugged && !Prefs.isPluggedIn(this) && hours >= 0.5 && used >= 0) {
+            val perHour = used / hours
+            prefs.lastBatteryReport = "%s · %.1f시간 동안 %d%% 사용 (시간당 약 %.1f%%, 9시간이면 약 %.0f%%)%s".format(
+                Recordings.nightKey(), hours, used, perHour, perHour * 9, if (prefs.ecoMode) " · 효율 모드" else ""
+            )
+        }
+        batStartLevel = -1
     }
 
     private fun stopWorker() {
+        if (worker != null) finishBatteryMeasure()
         worker?.let {
             it.running = false
             it.interrupt()
@@ -195,7 +234,7 @@ class ListenService : Service() {
         }
     }
 
-    private inner class Worker : Thread("bulkyeo-listen") {
+    private inner class Worker(val rate: Int) : Thread("bulkyeo-listen") {
         @Volatile
         var running = true
 
@@ -203,16 +242,17 @@ class ListenService : Service() {
         override fun run() {
             val m = loadModel() ?: return
             val rec = try {
-                Recognizer(m, RATE.toFloat())
+                Recognizer(m, rate.toFloat())
             } catch (e: Exception) {
                 return
             }
-            val minBuf = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val frame = rate / 10 // 0.1초
+            val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val ar = try {
                 AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
                     AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                    max(minBuf, FRAME * 2 * 4)
+                    max(minBuf, frame * 2 * 4)
                 )
             } catch (e: Exception) {
                 rec.close()
@@ -230,18 +270,19 @@ class ListenService : Service() {
             var inSpeech = false
             var speechFrames = 0
             var quietFrames = 0
+            val segment = ArrayList<ShortArray>() // 녹음용: 소리가 난 구간
 
             try {
                 ar.startRecording()
                 while (running) {
-                    val buf = ShortArray(FRAME)
+                    val buf = ShortArray(frame)
                     var n = 0
-                    while (n < FRAME && running) {
-                        val r = ar.read(buf, n, FRAME - n)
+                    while (n < frame && running) {
+                        val r = ar.read(buf, n, frame - n)
                         if (r <= 0) break
                         n += r
                     }
-                    if (!running || n < FRAME) {
+                    if (!running || n < frame) {
                         if (n <= 0) Thread.sleep(200)
                         continue
                     }
@@ -257,23 +298,36 @@ class ListenService : Service() {
                             speechFrames = 0
                             quietFrames = 0
                             rec.reset()
-                            for (f in ring) rec.acceptWaveForm(f, f.size)
+                            segment.clear()
+                            for (f in ring) {
+                                rec.acceptWaveForm(f, f.size)
+                                segment.add(f)
+                            }
                             ring.clear()
                         }
                     } else {
                         // 목소리가 들릴 때만: 음성 인식
                         speechFrames++
+                        segment.add(buf)
                         quietFrames = if (db > noiseFloor + TRIGGER_DB / 2) 0 else quietFrames + 1
                         val done = rec.acceptWaveForm(buf, n)
                         var text = if (done) textOf(rec.result, "text") else textOf(rec.partialResult, "partial")
                         if (handle(text)) {
+                            // 명령은 녹음하지 않는다
                             inSpeech = false
+                            segment.clear()
                             rec.reset()
                             continue
                         }
                         if (quietFrames >= END_QUIET || speechFrames >= MAX_SPEECH) {
                             text = textOf(rec.finalResult, "text")
-                            handle(text)
+                            if (!handle(text) && prefs.saveRecordings && speechFrames >= MIN_SAVE) {
+                                try {
+                                    Recordings.save(this@ListenService, segment, rate)
+                                } catch (_: Exception) {
+                                }
+                            }
+                            segment.clear()
                             inSpeech = false
                             rec.reset()
                         }
@@ -393,13 +447,14 @@ class ListenService : Service() {
         private const val CH_LISTEN = "listen"
         private const val CH_LIGHT = "light"
 
-        private const val RATE = 16000
-        private const val FRAME = 1600          // 0.1초
+        private const val RATE = 16000          // 보통 모드
+        private const val ECO_RATE = 8000       // 배터리 효율 모드
         private const val PRE_ROLL = 8          // 말 시작 전 0.8초 기억
         private const val TRIGGER_DB = 12.0     // 주변 소음보다 이만큼 크면 "목소리" 로 봄
         private const val MIN_TRIGGER_DB = -50.0
         private const val END_QUIET = 10        // 1초 조용하면 끝
         private const val MAX_SPEECH = 50       // 최대 5초까지만 인식
+        private const val MIN_SAVE = 3          // 0.3초보다 짧은 소리는 녹음하지 않음
 
         /** 서비스가 켜져 있음 (쉬는 중 포함) */
         @Volatile

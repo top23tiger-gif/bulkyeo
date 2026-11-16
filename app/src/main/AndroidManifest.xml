@@ -45,6 +45,11 @@
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
 
+        <!-- 녹음 모음 화면 -->
+        <activity
+            android:name=".RecordingsActivity"
+            android:exported="false" />
+
         <!-- 백그라운드 음성 듣기: 다른 앱이 제어할 수 없도록 exported=false -->
         <service
             android:name=".ListenService"
