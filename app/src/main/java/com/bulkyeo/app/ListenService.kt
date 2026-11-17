@@ -391,10 +391,27 @@ class ListenService : Service() {
         ""
     }
 
+    @Volatile
+    private var lastSaved: File? = null
+
+    @Volatile
+    private var lastSavedAt = 0L
+
+    /**
+     * 녹음 저장. 이럴 때는 녹음하지 않는다:
+     *  - 불이 켜져 있는 동안 (조명 화면이 떠 있을 때)
+     *  - "불켜/불꺼" 명령 직후 몇 초 (명령 끝부분이 따로 잘려 녹음되지 않게)
+     */
     private fun saveAsync(seg: List<ShortArray>, rate: Int) {
+        if (LightState.isShowing) return
+        if (SystemClock.elapsedRealtime() - lastCommandAt < NO_REC_AROUND_CMD) return
         Thread {
             try {
-                Recordings.save(this, seg, rate)
+                val f = Recordings.save(this, seg, rate)
+                if (f != null) {
+                    lastSaved = f
+                    lastSavedAt = SystemClock.elapsedRealtime()
+                }
             } catch (_: Exception) {
             }
         }.start()
@@ -558,6 +575,11 @@ class ListenService : Service() {
         val now = SystemClock.elapsedRealtime()
         if (now - lastCommandAt < 1500) return true
         lastCommandAt = now
+        // 명령 바로 전에 저장된 녹음은 명령의 앞부분일 수 있으니 지운다 (예: "불… 켜")
+        if (now - lastSavedAt < NO_REC_AROUND_CMD) {
+            lastSaved?.delete()
+            lastSaved = null
+        }
         main.post { if (on) lightOn() else lightOff() }
         return true
     }
@@ -659,6 +681,7 @@ class ListenService : Service() {
         private const val MIN_TRIGGER_DB = -55.0
         private const val END_QUIET = 10        // 1초 조용하면 끝
         private const val MAX_SPEECH = 50       // 최대 5초까지만 인식
+        private const val NO_REC_AROUND_CMD = 4000L // 명령 앞뒤 4초는 녹음하지 않음
         private const val MIN_SAVE = 3          // 0.3초보다 짧은 소리는 녹음하지 않음
 
         /** 마지막으로 들은 말 (화면 표시용, 저장하지 않음) */

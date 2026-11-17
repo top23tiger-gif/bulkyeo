@@ -34,12 +34,12 @@ object Recordings {
         return SimpleDateFormat("yyyy-MM-dd", Locale.US).format(d.time)
     }
 
-    /** PCM 16bit 모노 소리를 WAV 로 저장. 저장했으면 true */
-    fun save(context: Context, frames: List<ShortArray>, rate: Int): Boolean {
+    /** PCM 16bit 모노 소리를 WAV 로 저장. 저장한 파일 (못 했으면 null) */
+    fun save(context: Context, frames: List<ShortArray>, rate: Int): File? {
         val now = Calendar.getInstance()
         val dir = File(root(context), nightKey(now))
         dir.mkdirs()
-        if ((dir.list()?.size ?: 0) >= MAX_PER_NIGHT) return false
+        if ((dir.list()?.size ?: 0) >= MAX_PER_NIGHT) return null
         val name = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(now.time)
         var f = File(dir, "$name.wav")
         var i = 1
@@ -59,7 +59,7 @@ object Recordings {
             for (fr in frames) for (s in fr) bb.putShort(s)
             out.write(bb.array())
         }
-        return true
+        return f
     }
 
     /** 날짜 폴더 목록 (최근 날짜가 위로) */
