@@ -160,8 +160,9 @@ class ListenService : Service() {
         val skip = if (shouldListen) Recordings.nightKey() else null
         Thread {
             try {
+                // 먼저 끝난 밤의 잠꼬대 기록(코골이 요약 포함)을 Documents 로, 그다음 일주일 옮기기
+                Transcripts.exportFinished(this, prefs, skip)
                 Recordings.weeklyMoveIfDue(this, prefs, skip)
-                Transcripts.exportFinished(this, prefs, skip) // 끝난 밤의 잠꼬대 기록을 Documents 로
             } catch (_: Exception) {
             }
         }.start()
