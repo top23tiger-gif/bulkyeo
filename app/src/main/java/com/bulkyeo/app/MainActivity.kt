@@ -122,7 +122,7 @@ class MainActivity : Activity() {
         val recBox = bigCheck("다른 소리 녹음해 두기 (날짜별)", prefs.saveRecordings) {
             prefs.saveRecordings = it
         }
-        val snoreBox = bigCheck("코골이는 시간대별 긴 파일로 모아 두기", prefs.saveSnoring) {
+        val snoreBox = bigCheck("코골이는 밤마다 파일 하나로 모아 두기", prefs.saveSnoring) {
             prefs.saveSnoring = it
         }
         val recButton = bigButton("🌙 잠꼬대 듣기 (녹음 플레이어)") {

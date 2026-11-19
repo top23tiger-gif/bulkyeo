@@ -24,8 +24,8 @@ import java.util.Locale
  *   옮기기에 성공한 파일은 앱 안에서 지운다.
  * - 폴더 이름: 날짜 (밤 기준, 낮 12시 전 녹음은 전날 밤 폴더)
  * - 파일 이름: 실제 녹음한 날짜와 시간 (예: 2026-11-17_02-10-33.wav)
- * - 코골이는 버리지 않고 한 시간 단위의 긴 파일로 이어 붙인다:
- *   날짜 폴더 > 코골이 > 코골이_2026-11-16_02시.wav (8kHz, 하룻밤 최대 2시간 분량)
+ * - 코골이는 버리지 않고 그 밤의 파일 하나에 모두 이어 붙인다:
+ *   날짜 폴더 > 코골이 > 코골이_2026-11-16.wav (8kHz, 하룻밤 최대 2시간 분량)
  */
 object Recordings {
     private const val DIR = "recordings"
@@ -67,7 +67,7 @@ object Recordings {
         return f
     }
 
-    // ------------------------------------------------------------ 코골이 (시간대별 긴 파일)
+    // ------------------------------------------------------------ 코골이 (밤마다 파일 하나)
 
     private const val SNORE_DIR = "코골이"
     private const val SNORE_RATE = 8000
@@ -82,7 +82,7 @@ object Recordings {
     fun snoreSeconds(context: Context, night: String): Double =
         snoreFiles(File(root(context), night)).sumOf { (it.length() - 44).coerceAtLeast(0) / 2.0 / SNORE_RATE }
 
-    /** 코골이 조각을 그 시간대의 긴 파일 끝에 이어 붙인다 (조각 사이 0.3초 쉼) */
+    /** 코골이 조각을 그 밤의 코골이 파일 하나 끝에 이어 붙인다 (조각 사이 0.3초 쉼) */
     @Synchronized
     fun appendSnore(context: Context, frames: List<ShortArray>, rate: Int, start: Calendar): Boolean {
         val night = nightKey(start)
@@ -107,8 +107,7 @@ object Recordings {
                 cnt = 0
             }
         }
-        val hour = SimpleDateFormat("HH", Locale.US).format(start.time)
-        val f = File(dir, "코골이_${night}_${hour}시.wav")
+        val f = File(dir, "코골이_$night.wav")
         RandomAccessFile(f, "rw").use { raf ->
             if (raf.length() < 44) {
                 raf.setLength(0)

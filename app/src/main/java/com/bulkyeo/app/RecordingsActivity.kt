@@ -242,15 +242,15 @@ class RecordingsActivity : Activity() {
             })
         }
         if (snores.isNotEmpty()) {
-            col.addView(label("😴 코골이 모음 (시간대별, 총 ${fmt(snores.sumOf { it.durationMs })})", 22f, Color.WHITE))
+            col.addView(label("😴 코골이 (이 밤 전체를 파일 하나로)", 22f, Color.WHITE))
             snores.forEachIndexed { i, clip ->
                 val where = if (clip.inApp) "" else "  ·  📁"
-                col.addView(button("${clip.timeText} 코골이   (${fmt(clip.durationMs)})$where") {
+                col.addView(button("▶ ${clip.name.removeSuffix(".wav")}   (${fmt(clip.durationMs)})$where") {
                     queue = snores
                     playAt(i)
                 }.apply {
                     setOnLongClickListener {
-                        confirmDelete(listOf(clip), "${clip.timeText} 코골이 파일을 지울까요?")
+                        confirmDelete(listOf(clip), "이 밤 코골이 파일을 지울까요?")
                         true
                     }
                 })

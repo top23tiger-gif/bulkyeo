@@ -70,7 +70,7 @@ object Transcripts {
             if (snore > 0) {
                 val m = (snore / 60).toInt()
                 val sec = (snore % 60).toInt()
-                f.appendText("\n코골이: 총 ${m}분 ${sec}초 (시간대별 소리: 녹음 > 불켜 > $night > 코골이)\n")
+                f.appendText("\n코골이: 총 ${m}분 ${sec}초 (소리: Recordings > 불켜 > $night > 코골이 > 코골이_$night.wav)\n")
             }
             if (writeToDocuments(context, night, f)) {
                 done.add(night)

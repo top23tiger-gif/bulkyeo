@@ -14,8 +14,8 @@ android {
         applicationId = "com.bulkyeo.app"
         minSdk = 30
         targetSdk = 34
-        versionCode = 11
-        versionName = "11.0"
+        versionCode = 12
+        versionName = "12.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
