@@ -1,0 +1,4 @@
+prototype/pose-web/wasm/
+prototype/pose-web/models/
+prototype/pose-web/package/
+*.tgz
