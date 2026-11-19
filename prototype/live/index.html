@@ -53,7 +53,11 @@ aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflo
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .panel h2 { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); margin: 0; font-weight: 500; }
 .cam { position: relative; border-radius: 12px; overflow: hidden; background: var(--floor); aspect-ratio: 4 / 3; }
-.cam video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 15px; color: var(--muted); }
+.field select, .field input[type=range] { width: 100%; min-height: 44px; font: 500 16px var(--font-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; accent-color: var(--accent); }
+.field input[type=range] { border: none; padding: 0; }
+.tip { font-size: 14px; color: var(--muted); margin: 0; }
 .cam.mirror video { transform: scaleX(-1); }
 .cam .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; font-size: 15px; color: var(--muted); padding: 12px; }
 .cam.hidden-video video { visibility: hidden; }
@@ -104,8 +108,15 @@ dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 500; text-align
         <div class="empty" id="camEmpty">카메라가 꺼져 있어요</div>
       </div>
       <label class="toggle"><input type="checkbox" id="hideCam"> 내 모습 숨기기</label>
+      <label class="field" id="camPickWrap" hidden>카메라 선택 (광각 카메라를 골라 보세요)
+        <select id="camPick"></select>
+      </label>
+      <label class="field" id="zoomWrap" hidden>화면 넓이 <span id="zoomVal"></span>
+        <input type="range" id="zoom">
+      </label>
+      <p class="tip">💡 태블릿을 <b>세로로</b> 세우면 머리부터 발끝까지 훨씬 잘 담겨요.</p>
       <div class="row">
-        <button class="btn secondary" id="flipBtn" type="button">카메라 전환</button>
+        <button class="btn secondary" id="flipBtn" type="button">앞뒤 전환</button>
         <button class="btn secondary" id="fullBtn" type="button">전체 화면</button>
       </div>
     </div>
@@ -123,6 +134,7 @@ dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 500; text-align
     <div class="panel">
       <h2>상대에게 보낼 데이터</h2>
       <dl>
+        <dt>카메라 화면</dt><dd id="mRes">-</dd>
         <dt>초당 인식</dt><dd id="mFps">-</dd>
         <dt>인식 지연</dt><dd id="mLat">-</dd>
         <dt>프레임당 크기</dt><dd id="mBytes">-</dd>
@@ -337,24 +349,74 @@ $("fullBtn").onclick = () => {
 };
 
 // ---------- camera ----------
-let stream = null, facing = "user", wakeLock = null;
+let stream = null, facing = "user", deviceId = null, wakeLock = null;
+const isWide = label => /ultra|wide|광각|0\.5/i.test(label || "");
+async function listCameras() {
+  const all = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "videoinput");
+  const pickEl = $("camPick");
+  pickEl.innerHTML = "";
+  all.forEach((d, i) => {
+    const o = document.createElement("option");
+    o.value = d.deviceId;
+    const lbl = d.label || `카메라 ${i + 1}`;
+    const side = /front|user|전면/i.test(lbl) ? "앞" : /back|rear|environment|후면/i.test(lbl) ? "뒤" : "";
+    o.textContent = `${side ? side + " · " : ""}${lbl}${isWide(lbl) ? " (광각)" : ""}`;
+    pickEl.appendChild(o);
+  });
+  $("camPickWrap").hidden = all.length < 2;
+  return all;
+}
+async function applyWidestZoom(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  const zw = $("zoomWrap"), z = $("zoom");
+  if (!caps.zoom) { zw.hidden = true; return; }
+  z.min = caps.zoom.min; z.max = Math.min(caps.zoom.max, caps.zoom.min * 3); z.step = caps.zoom.step || 0.1;
+  z.value = caps.zoom.min;
+  try { await track.applyConstraints({ advanced: [{ zoom: caps.zoom.min }] }); } catch {}
+  $("zoomVal").textContent = "가장 넓게 (" + (+caps.zoom.min).toFixed(1) + "배)";
+  zw.hidden = false;
+}
+$("zoom").oninput = async e => {
+  const track = stream && stream.getVideoTracks()[0];
+  if (!track) return;
+  const v = +e.target.value;
+  $("zoomVal").textContent = v.toFixed(1) + "배";
+  try { await track.applyConstraints({ advanced: [{ zoom: v }] }); } catch {}
+};
 async function startCamera() {
   $("camErr").hidden = true;
   try {
     if (stream) stream.getTracks().forEach(t => t.stop());
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-      audio: false,
-    });
+    // 4:3 at high resolution uses the whole sensor; 16:9 would cut off the top and bottom
+    const video4x3 = { width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 }, frameRate: { ideal: 30 }, resizeMode: "none" };
+    const pick = deviceId ? { deviceId: { exact: deviceId } } : { facingMode: facing };
+    stream = await navigator.mediaDevices.getUserMedia({ video: { ...video4x3, ...pick }, audio: false });
+    const track = stream.getVideoTracks()[0];
+    // first start: if a camera on this side is labeled as wide, switch to it
+    if (!deviceId) {
+      const cams = await listCameras();
+      const sameSide = cams.filter(c => facing === "user" ? /front|user|전면/i.test(c.label) : !/front|user|전면/i.test(c.label));
+      const wide = sameSide.find(c => isWide(c.label));
+      if (wide && wide.deviceId !== track.getSettings().deviceId) { deviceId = wide.deviceId; return startCamera(); }
+    } else {
+      await listCameras();
+    }
+    const st = track.getSettings();
+    $("camPick").value = st.deviceId || "";
     video.srcObject = stream;
     await video.play();
+    await applyWidestZoom(track);
+    const w = video.videoWidth || st.width, h = video.videoHeight || st.height;
+    $("mRes").textContent = w && h ? `${w}×${h}` : "-";
     $("camEmpty").hidden = true;
     $("startBtn").textContent = "카메라 다시 켜기";
-    cam.classList.toggle("mirror", facing === "user");
+    const front = st.facingMode ? st.facingMode === "user" : facing === "user";
+    cam.classList.toggle("mirror", front);
     setGuide("사람을 찾는 중", false);
     try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   } catch (err) {
     console.error(err);
+    if (deviceId && (err.name === "OverconstrainedError" || err.name === "NotReadableError")) { deviceId = null; return startCamera(); }
     const e = $("camErr");
     e.hidden = false;
     e.textContent = err.name === "NotAllowedError"
@@ -363,7 +425,8 @@ async function startCamera() {
   }
 }
 $("startBtn").onclick = startCamera;
-$("flipBtn").onclick = () => { facing = facing === "user" ? "environment" : "user"; if (stream) startCamera(); };
+$("camPick").onchange = e => { deviceId = e.target.value; startCamera(); };
+$("flipBtn").onclick = () => { facing = facing === "user" ? "environment" : "user"; deviceId = null; if (stream) startCamera(); };
 document.addEventListener("visibilitychange", async () => {
   if (document.visibilityState === "visible" && stream && !wakeLock) {
     try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
