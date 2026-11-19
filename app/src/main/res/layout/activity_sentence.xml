@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- 상황을 보여주는 배경 그림 -->
+    <ImageView
+        android:id="@+id/background"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:contentDescription="@null"
+        android:scaleType="centerCrop" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="260dp"
+        android:layout_gravity="top"
+        android:background="@drawable/shade_top" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="420dp"
+        android:layout_gravity="bottom"
+        android:background="@drawable/shade_bottom" />
+
+    <!-- 위쪽: 버튼 + 상황 설명 -->
+    <LinearLayout
+        android:id="@+id/topArea"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/btnHome"
+                style="@style/GlassButton"
+                android:text="← 처음 화면" />
+
+            <TextView
+                android:id="@+id/counter"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:shadowColor="#000000"
+                android:shadowRadius="6"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp" />
+
+            <TextView
+                android:id="@+id/btnBackground"
+                style="@style/GlassButton"
+                android:text="🖼 배경 바꾸기" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/situation"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/situation_card"
+            android:lineSpacingMultiplier="1.15"
+            android:padding="16dp"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp" />
+    </LinearLayout>
+
+    <!-- 아래쪽: 자막처럼 보이는 영어 문장 + 버튼 -->
+    <LinearLayout
+        android:id="@+id/bottomArea"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:orientation="vertical"
+        android:paddingStart="20dp"
+        android:paddingTop="16dp"
+        android:paddingEnd="20dp"
+        android:paddingBottom="16dp">
+
+        <TextView
+            android:id="@+id/english"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="serif"
+            android:gravity="center"
+            android:lineSpacingMultiplier="1.1"
+            android:shadowColor="#000000"
+            android:shadowDx="0"
+            android:shadowDy="2"
+            android:shadowRadius="10"
+            android:textColor="#FFFFFF"
+            android:textSize="32sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/korean"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:gravity="center"
+            android:shadowColor="#000000"
+            android:shadowRadius="8"
+            android:textColor="#FFE58A"
+            android:textSize="22sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="26dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/btnPrev"
+                style="@style/BigButton"
+                android:text="◀ 이전" />
+
+            <TextView
+                android:id="@+id/btnSpeak"
+                style="@style/BigButton"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/btn_primary"
+                android:text="🔊 듣기" />
+
+            <TextView
+                android:id="@+id/btnSlow"
+                style="@style/BigButton"
+                android:layout_marginStart="8dp"
+                android:text="🐢 천천히" />
+
+            <TextView
+                android:id="@+id/btnNext"
+                style="@style/BigButton"
+                android:layout_marginStart="8dp"
+                android:text="다음 ▶" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

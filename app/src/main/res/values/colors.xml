@@ -1,0 +1,9 @@
+<resources>
+    <color name="bg">#FFF8F0</color>
+    <color name="ink">#2B2118</color>
+    <color name="inkSoft">#7A6A5C</color>
+    <color name="accent">#D9653B</color>
+    <color name="danger">#C0392B</color>
+    <color name="card">#FFFFFF</color>
+    <color name="launcherBg">#F6C177</color>
+</resources>
