@@ -122,7 +122,7 @@ class MainActivity : Activity() {
         val recBox = bigCheck("다른 소리 녹음해 두기 (날짜별)", prefs.saveRecordings) {
             prefs.saveRecordings = it
         }
-        val recButton = bigButton("녹음 모음 보기") {
+        val recButton = bigButton("🌙 잠꼬대 듣기 (녹음 플레이어)") {
             startActivity(Intent(this, RecordingsActivity::class.java))
         }
         batteryInfo = TextView(this).apply {

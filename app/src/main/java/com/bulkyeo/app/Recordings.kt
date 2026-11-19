@@ -1,7 +1,9 @@
 package com.bulkyeo.app
 
 import android.content.ContentValues
+import android.content.ContentUris
 import android.content.Context
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -128,5 +130,66 @@ object Recordings {
         }
         if (files(night).isEmpty()) night.deleteRecursively()
         return n
+    }
+
+    // ------------------------------------------------------------ 플레이어용 목록
+
+    /** 녹음 하나. [file] 이 있으면 앱 안, 없으면 기기 파일(내 파일) */
+    data class Clip(
+        val night: String,
+        val name: String,
+        val uri: Uri,
+        val file: File?,
+        val durationMs: Long,
+    ) {
+        val inApp get() = file != null
+
+        /** "02:10:33" */
+        val timeText get() = name.removeSuffix(".wav").substringAfter('_').take(8).replace('-', ':')
+    }
+
+    /** 앱 안 + 기기 파일의 녹음을 밤 날짜별로 묶는다 (최근 날짜 먼저, 날짜 안에서는 시간 순) */
+    fun catalog(context: Context): Map<String, List<Clip>> {
+        val all = ArrayList<Clip>()
+        for (night in nights(context)) {
+            for (f in files(night)) {
+                val ms = ((f.length() - 44).coerceAtLeast(0) / 2.0 / wavRate(f) * 1000).toLong()
+                all.add(Clip(night.name, f.name, Uri.fromFile(f), f, ms))
+            }
+        }
+        try {
+            val coll = MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+            val proj = arrayOf(
+                MediaStore.Audio.Media._ID,
+                MediaStore.Audio.Media.DISPLAY_NAME,
+                MediaStore.Audio.Media.RELATIVE_PATH,
+                MediaStore.Audio.Media.DURATION,
+            )
+            context.contentResolver.query(
+                coll, proj, "${MediaStore.Audio.Media.RELATIVE_PATH} LIKE ?", arrayOf("%/불켜/%"), null
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getLong(0)
+                    val name = c.getString(1) ?: continue
+                    val night = (c.getString(2) ?: "").trimEnd('/').substringAfterLast('/')
+                    all.add(Clip(night, name, ContentUris.withAppendedId(coll, id), null, c.getLong(3)))
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return all.groupBy { it.night }
+            .mapValues { (_, v) -> v.distinctBy { it.name }.sortedBy { it.name } }
+            .toSortedMap(reverseOrder())
+    }
+
+    fun wavRate(f: File): Int = try {
+        f.inputStream().use { s ->
+            val h = ByteArray(28)
+            s.read(h)
+            (h[24].toInt() and 0xff) or ((h[25].toInt() and 0xff) shl 8) or
+                ((h[26].toInt() and 0xff) shl 16) or ((h[27].toInt() and 0xff) shl 24)
+        }.takeIf { it > 0 } ?: 16000
+    } catch (e: Exception) {
+        16000
     }
 }
