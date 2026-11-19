@@ -59,9 +59,19 @@ object Transcripts {
     fun exportFinished(context: Context, prefs: Prefs, skipNight: String?): Int {
         val done = prefs.exportedTranscripts.toMutableSet()
         var n = 0
-        for (f in dir(context).listFiles { x -> x.name.endsWith(".txt") } ?: emptyArray()) {
-            val night = f.nameWithoutExtension
+        val nights = (dir(context).listFiles { x -> x.name.endsWith(".txt") }?.map { it.nameWithoutExtension } ?: emptyList()) +
+            Recordings.nights(context).map { it.name }
+        for (night in nights.distinct()) {
             if (night == skipNight || night in done) continue
+            val f = file(context, night)
+            if (!f.exists()) f.writeText(header(night) + "(잠꼬대 없음)\n")
+            // 코골이 요약 한 줄
+            val snore = Recordings.snoreSeconds(context, night)
+            if (snore > 0) {
+                val m = (snore / 60).toInt()
+                val sec = (snore % 60).toInt()
+                f.appendText("\n코골이: 총 ${m}분 ${sec}초 (시간대별 소리: 녹음 > 불켜 > $night > 코골이)\n")
+            }
             if (writeToDocuments(context, night, f)) {
                 done.add(night)
                 n++

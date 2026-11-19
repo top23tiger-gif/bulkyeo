@@ -435,8 +435,15 @@ class ListenService : Service() {
             try {
                 val c = classifier()
                 val heard = googleText.isNotBlank()
-                val talk = if (c == null) heard else SoundClassifier.isSleepTalk(c.classify(seg, rate), heard)
-                if (!talk) return@Thread
+                val v = c?.classify(seg, rate)
+                val talk = if (v == null) heard else SoundClassifier.isSleepTalk(v, heard)
+                if (!talk) {
+                    // 코골이는 시간대별 긴 파일에 이어 붙인다
+                    if (v != null && SoundClassifier.isSnore(v) && prefs.saveSnoring) {
+                        Recordings.appendSnore(this, seg, rate, start)
+                    }
+                    return@Thread
+                }
 
                 val f = Recordings.save(this, seg, rate, start)
                 if (f != null) {

@@ -188,8 +188,10 @@ class RecordingsActivity : Activity() {
         col.addView(label("잠꼬대만 모았어요 (코골이·숨소리는 AI 가 걸러요).\n밤 9시 ~ 아침 6시 녹음은 시작한 밤의 날짜로 묶이고,\n불이 켜져 있을 때(깨어 있을 때)는 녹음하지 않아요.\n한 말 기록: 내 파일 > Documents > 불켜", 16f, Color.GRAY))
         if (catalog.isEmpty()) col.addView(label("아직 녹음이 없어요.", 22f, Color.LTGRAY))
         for ((night, clips) in catalog) {
-            val total = clips.sumOf { it.durationMs }
-            col.addView(button("📅 ${nightLabel(night)}  ·  ${clips.size}개  ·  ${fmt(total)}") { showNight(night) })
+            val talk = clips.filter { !it.snore }
+            val snore = clips.filter { it.snore }.sumOf { it.durationMs }
+            val snoreText = if (snore > 0) "  ·  😴 ${fmt(snore)}" else ""
+            col.addView(button("📅 ${nightLabel(night)}  ·  잠꼬대 ${talk.size}개$snoreText") { showNight(night) })
         }
         col.addView(button("앱 안 녹음을 지금 기기 파일로 옮기기") {
             val skip = if (ListenService.isActive) Recordings.nightKey() else null
@@ -205,7 +207,9 @@ class RecordingsActivity : Activity() {
 
     private fun showNight(night: String) {
         openNight = night
-        val clips = catalog[night] ?: emptyList()
+        val all = catalog[night] ?: emptyList()
+        val clips = all.filter { !it.snore }
+        val snores = all.filter { it.snore }
         col.removeAllViews()
         col.addView(button("← 날짜 목록") { showNights() })
         col.addView(label("${nightLabel(night)}  (${clips.size}개)", 24f, Color.WHITE))
@@ -237,9 +241,24 @@ class RecordingsActivity : Activity() {
                 }
             })
         }
+        if (snores.isNotEmpty()) {
+            col.addView(label("😴 코골이 모음 (시간대별, 총 ${fmt(snores.sumOf { it.durationMs })})", 22f, Color.WHITE))
+            snores.forEachIndexed { i, clip ->
+                val where = if (clip.inApp) "" else "  ·  📁"
+                col.addView(button("${clip.timeText} 코골이   (${fmt(clip.durationMs)})$where") {
+                    queue = snores
+                    playAt(i)
+                }.apply {
+                    setOnLongClickListener {
+                        confirmDelete(listOf(clip), "${clip.timeText} 코골이 파일을 지울까요?")
+                        true
+                    }
+                })
+            }
+        }
         col.addView(label("녹음을 길게 누르면 지울 수 있어요. 📁 = 기기 파일에 있는 녹음", 16f, Color.GRAY))
         col.addView(button("이 밤 녹음 모두 지우기") {
-            confirmDelete(clips, "${nightLabel(night)} 녹음 ${clips.size}개를 모두 지울까요? 되돌릴 수 없어요.")
+            confirmDelete(all, "${nightLabel(night)} 녹음 ${all.size}개(코골이 포함)를 모두 지울까요? 되돌릴 수 없어요.")
         })
     }
 

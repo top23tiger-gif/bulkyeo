@@ -60,6 +60,11 @@ class Prefs(context: Context) {
     val inTestMode: Boolean
         get() = System.currentTimeMillis() < testUntil
 
+    /** 코골이를 시간대별 긴 파일로 모아 둘지 */
+    var saveSnoring: Boolean
+        get() = sp.getBoolean("saveSnoring", true)
+        set(v) = sp.edit().putBoolean("saveSnoring", v).apply()
+
     /** 이미 Documents 로 저장한 잠꼬대 기록 (밤 날짜) */
     var exportedTranscripts: Set<String>
         get() = sp.getStringSet("exportedTranscripts", emptySet()) ?: emptySet()

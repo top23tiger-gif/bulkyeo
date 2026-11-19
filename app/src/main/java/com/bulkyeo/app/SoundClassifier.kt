@@ -86,6 +86,8 @@ class SoundClassifier(context: Context) {
          *  - AI 가 말소리라고 확실히 판단하고, 코골이 점수보다 높으면 → 잠꼬대
          *  - 구글 인식기가 글자로 알아들었고, 코골이가 아니면 → 잠꼬대
          */
+        fun isSnore(v: Verdict): Boolean = v.snore >= 0.3f && v.snore >= v.speech
+
         fun isSleepTalk(v: Verdict, heardWords: Boolean): Boolean =
             (v.speech >= 0.35f && v.speech > v.snore) ||
                 (heardWords && v.speech >= 0.1f && v.snore < 0.5f)
