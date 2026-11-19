@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f7f69">
+<title>위드무브 실시간 동작</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jua&family=IBM+Plex+Sans+KR:wght@400;500;700&display=swap">
+<style>
+/* Layout: tablet landscape. The character fills the stage; a narrow side column holds the camera check and controls. */
+:root {
+  --bg: #eef2f4; --surface: #ffffff; --ink: #18222c; --muted: #5b6874; --line: #d5dde3;
+  --accent: #0f7f69; --accent-ink: #ffffff; --floor: #dfe7ea; --stage: #f8fafb; --warn: #b5541a;
+  --font-display: "Jua", "IBM Plex Sans KR", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans KR", system-ui, -apple-system, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #12181d; --surface: #1b232a; --ink: #e8eef2; --muted: #9aa8b3; --line: #2c3740;
+    --accent: #3cc2a2; --accent-ink: #0b1714; --floor: #222c33; --stage: #171f25; --warn: #f0965a;
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 17px; line-height: 1.5;
+  padding: max(14px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+[hidden] { display: none !important; }
+.app { height: 100%; display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: auto minmax(0, 1fr); gap: 14px; }
+header { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+h1 { font-family: var(--font-display); font-weight: 400; font-size: 28px; margin: 0; }
+h1 span { color: var(--accent); }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); font-size: 15px; color: var(--muted); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+.chip[data-state="ready"] .dot { background: var(--accent); }
+.chip[data-state="error"] { color: var(--warn); }
+.chip[data-state="error"] .dot { background: var(--warn); }
+
+.stage { position: relative; background: var(--stage); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; min-height: 0; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.overlay { position: absolute; left: 18px; top: 16px; right: 18px; display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; pointer-events: none; }
+.counter { font-family: var(--font-display); font-size: 26px; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 8px 18px; }
+.counter b { font-size: 54px; line-height: 1; font-weight: 400; color: var(--accent); font-variant-numeric: tabular-nums; margin-left: 8px; }
+.guide { font-family: var(--font-display); font-size: 24px; background: var(--surface); border: 2px solid var(--warn); color: var(--warn); border-radius: 16px; padding: 8px 16px; }
+.guide.ok { border-color: var(--accent); color: var(--accent); }
+.privacy { position: absolute; left: 18px; bottom: 14px; font-size: 14px; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; }
+
+aside { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.panel h2 { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); margin: 0; font-weight: 500; }
+.cam { position: relative; border-radius: 12px; overflow: hidden; background: var(--floor); aspect-ratio: 4 / 3; }
+.cam video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam.mirror video { transform: scaleX(-1); }
+.cam .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; font-size: 15px; color: var(--muted); padding: 12px; }
+.cam.hidden-video video { visibility: hidden; }
+.cam.hidden-video::after { content: "내 모습 숨김"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 15px; }
+.btn { display: flex; align-items: center; justify-content: center; min-height: 64px; border-radius: 16px; border: none; background: var(--accent); color: var(--accent-ink); font: 700 19px var(--font-body); cursor: pointer; padding: 0 16px; }
+.btn.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); min-height: 50px; font-weight: 500; font-size: 16px; }
+.btn:focus-visible, .seg button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.seg button { min-height: 50px; border-radius: 12px; border: 1px solid var(--line); background: transparent; color: var(--ink); font: 500 16px var(--font-body); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.seg button[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); font-weight: 700; }
+.swatch { width: 14px; height: 14px; border-radius: 50%; }
+.toggle { display: flex; align-items: center; gap: 10px; font-size: 16px; cursor: pointer; min-height: 36px; }
+.toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
+dl { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 15px; }
+dt { color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; font-weight: 500; text-align: right; }
+.err { color: var(--warn); font-size: 15px; margin: 0; }
+
+@media (max-width: 860px), (orientation: portrait) {
+  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(360px, 62vh) auto; height: auto; }
+  aside { overflow: visible; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>위드무브 <span>실시간 동작</span></h1>
+    <div class="chip" id="status" data-state="loading"><span class="dot"></span><span id="statusText">인식 모델 준비 중</span></div>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="cv" aria-label="내 동작을 따라 하는 캐릭터"></canvas>
+    <div class="overlay">
+      <div class="counter">스쿼트<b id="reps">0</b></div>
+      <div class="guide" id="guide">카메라를 켜 주세요</div>
+    </div>
+    <div class="privacy">🔒 영상은 이 기기 밖으로 나가지 않아요</div>
+  </main>
+
+  <aside>
+    <div class="panel">
+      <button class="btn" id="startBtn" type="button">카메라 켜기</button>
+      <p class="err" id="camErr" hidden></p>
+      <div class="cam mirror" id="cam">
+        <video id="video" playsinline muted autoplay></video>
+        <div class="empty" id="camEmpty">카메라가 꺼져 있어요</div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="hideCam"> 내 모습 숨기기</label>
+      <div class="row">
+        <button class="btn secondary" id="flipBtn" type="button">카메라 전환</button>
+        <button class="btn secondary" id="fullBtn" type="button">전체 화면</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>캐릭터</h2>
+      <div class="seg" role="group" aria-label="캐릭터 선택">
+        <button type="button" id="cMom" aria-pressed="true"><span class="swatch" style="background:#e39a2d"></span>엄마</button>
+        <button type="button" id="cMe" aria-pressed="false"><span class="swatch" style="background:#3c6fe0"></span>나</button>
+      </div>
+      <label class="toggle"><input type="checkbox" id="mirror" checked> 거울처럼 보기</label>
+      <button class="btn secondary" id="resetBtn" type="button">횟수 초기화</button>
+    </div>
+
+    <div class="panel">
+      <h2>상대에게 보낼 데이터</h2>
+      <dl>
+        <dt>초당 인식</dt><dd id="mFps">-</dd>
+        <dt>인식 지연</dt><dd id="mLat">-</dd>
+        <dt>프레임당 크기</dt><dd id="mBytes">-</dd>
+        <dt>초당 전송량</dt><dd id="mRate">-</dd>
+      </dl>
+    </div>
+  </aside>
+</div>
+
+<script type="module">
+const MP_VERSION = "0.10.14";
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+
+// ---------- character presets ----------
+const PRESETS = {
+  mom: { shirt: "#e39a2d", pants: "#4b5563", skin: "#f1c7a3", hair: "#3b2f2f", shoe: "#2f3640", style: "bob", name: "엄마" },
+  me:  { shirt: "#3c6fe0", pants: "#2d3748", skin: "#efc19c", hair: "#1f1a17", shoe: "#1e2329", style: "short", name: "나" },
+};
+let preset = PRESETS.mom;
+
+// ---------- body model ----------
+// Every segment is a 3D unit direction with a standard length, so only movement is shown, never body shape.
+const LEN = { torso: 2.7, neck: 1.15, uArm: 1.5, fArm: 1.35, thigh: 2.0, shin: 1.95, foot: 0.6, hipHalf: 0.5, shHalf: 0.9 };
+const SEGS = ["torso","neck","shoulder","hip","uArmL","fArmL","uArmR","fArmR","thighL","shinL","footL","thighR","shinR","footR"];
+const norm = v => { const l = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0]/l, v[1]/l, v[2]/l]; };
+const sub = (a, b) => [a.x - b.x, a.y - b.y, a.z - b.z];
+const mid = (a, b) => ({ x: (a.x + b.x)/2, y: (a.y + b.y)/2, z: (a.z + b.z)/2 });
+
+function neutralPose() {
+  return {
+    torso: [0,-1,0], neck: [0,-1,0], shoulder: [1,0,0], hip: [1,0,0],
+    uArmL: norm([0.16,1,0]), fArmL: norm([0.08,1,0.05]), uArmR: norm([-0.16,1,0]), fArmR: norm([-0.08,1,0.05]),
+    thighL: norm([0.04,1,0]), shinL: [0,1,0], footL: norm([0.25,0.35,-1]),
+    thighR: norm([-0.04,1,0]), shinR: [0,1,0], footR: norm([-0.25,0.35,-1]),
+    yaw: 0, sideL: 0,
+  };
+}
+let target = neutralPose();
+let shown = neutralPose();
+
+// idle motion before the camera starts
+function idlePose(t) {
+  const p = neutralPose();
+  const a = 0.16 + (1 - Math.cos(t * 1.6)) * 0.08;
+  p.uArmL = norm([Math.sin(a) * 1.0, Math.cos(a), 0]);
+  p.uArmR = norm([-Math.sin(a) * 1.0, Math.cos(a), 0]);
+  p.yaw = Math.sin(t * 0.6) * 0.25;
+  return p;
+}
+
+const VIS = 0.45;
+function poseFromWorld(w, img) {
+  const p = {};
+  const ok = (...ids) => ids.every(i => (img[i].visibility ?? 1) > VIS);
+  const keep = (k, ids, v) => { p[k] = ok(...ids) ? norm(v) : target[k]; };
+  const shM = mid(w[11], w[12]), hipM = mid(w[23], w[24]), earM = mid(w[7], w[8]);
+  keep("torso", [11,12,23,24], sub(shM, hipM));
+  keep("neck", [7,8,11,12], sub(earM, shM));
+  keep("shoulder", [11,12], sub(w[11], w[12]));
+  keep("hip", [23,24], sub(w[23], w[24]));
+  keep("uArmL", [11,13], sub(w[13], w[11])); keep("fArmL", [13,15], sub(w[15], w[13]));
+  keep("uArmR", [12,14], sub(w[14], w[12])); keep("fArmR", [14,16], sub(w[16], w[14]));
+  keep("thighL", [23,25], sub(w[25], w[23])); keep("shinL", [25,27], sub(w[27], w[25])); keep("footL", [27,31], sub(w[31], w[27]));
+  keep("thighR", [24,26], sub(w[26], w[24])); keep("shinR", [26,28], sub(w[28], w[26])); keep("footR", [28,32], sub(w[32], w[28]));
+  const earD = Math.hypot(w[7].x - w[8].x, w[7].z - w[8].z) || 1;
+  p.yaw = Math.max(-1, Math.min(1, (w[0].x - earM.x) / earD * 1.6));
+  p.sideL = ((w[11].z + w[23].z) - (w[12].z + w[24].z)) / 2;
+  return p;
+}
+function mirrorPose(p) {
+  const m = { yaw: -p.yaw, sideL: p.sideL };
+  for (const s of SEGS) m[s] = [-p[s][0], p[s][1], p[s][2]];
+  return m;
+}
+function kneeAngle(w) {
+  const ang = (a, b, c) => {
+    const u = norm(sub(a, b)), v = norm(sub(c, b));
+    return Math.acos(Math.max(-1, Math.min(1, u[0]*v[0] + u[1]*v[1] + u[2]*v[2]))) * 180 / Math.PI;
+  };
+  return (ang(w[23], w[25], w[27]) + ang(w[24], w[26], w[28])) / 2;
+}
+
+function smooth(k) {
+  for (const s of SEGS) {
+    const a = shown[s], b = target[s];
+    shown[s] = norm([a[0] + (b[0]-a[0])*k, a[1] + (b[1]-a[1])*k, a[2] + (b[2]-a[2])*k]);
+  }
+  shown.yaw += (target.yaw - shown.yaw) * k;
+  shown.sideL += ((target.sideL || 0) - shown.sideL) * k;
+}
+let reps = 0, down = false;
+function trackSquat(knee) {
+  if (!down && knee < 115) down = true;
+  else if (down && knee > 155) { down = false; reps++; repsEl.textContent = reps; }
+}
+
+// ---------- drawing ----------
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+let W = 0, H = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * d); cv.height = Math.round(H * d);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+new ResizeObserver(resize).observe(cv);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function buildBody(p, U) {
+  const add = (o, v, l) => ({ x: o.x + v[0]*l*U, y: o.y + v[1]*l*U });
+  const P = { x: 0, y: 0 };
+  const shM = add(P, p.torso, LEN.torso);
+  const hipL = add(P, p.hip, LEN.hipHalf), hipR = add(P, p.hip, -LEN.hipHalf);
+  const shL = add(shM, p.shoulder, LEN.shHalf), shR = add(shM, p.shoulder, -LEN.shHalf);
+  const head = add(shM, p.neck, LEN.neck);
+  const elL = add(shL, p.uArmL, LEN.uArm), wrL = add(elL, p.fArmL, LEN.fArm);
+  const elR = add(shR, p.uArmR, LEN.uArm), wrR = add(elR, p.fArmR, LEN.fArm);
+  const knL = add(hipL, p.thighL, LEN.thigh), anL = add(knL, p.shinL, LEN.shin), toL = add(anL, p.footL, LEN.foot);
+  const knR = add(hipR, p.thighR, LEN.thigh), anR = add(knR, p.shinR, LEN.shin), toR = add(anR, p.footR, LEN.foot);
+  return { shM, hipL, hipR, shL, shR, head, elL, wrL, elR, wrR, knL, anL, toL, knR, anR, toR };
+}
+function line(pts, w, color) {
+  ctx.strokeStyle = color; ctx.lineWidth = w; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y); for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
+}
+function dot(pt, r, color) { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(pt.x, pt.y, r, 0, Math.PI*2); ctx.fill(); }
+
+function drawCharacter(p) {
+  const U = H / 11.2;
+  const b = buildBody(p, U);
+  const floorY = H * 0.9;
+  const lowest = Math.max(b.anL.y, b.anR.y, b.toL.y, b.toR.y) + 0.22*U;
+  const ox = W / 2, oy = floorY - lowest;
+  ctx.save(); ctx.translate(ox, oy);
+  ctx.fillStyle = css("--floor");
+  ctx.beginPath(); ctx.ellipse(0, floorY - oy, U * 2.1, U * 0.32, 0, 0, Math.PI*2); ctx.fill();
+
+  const c = preset;
+  const leg = s => {
+    const L = s === "L";
+    const h = L ? b.hipL : b.hipR, k = L ? b.knL : b.knR, a = L ? b.anL : b.anR, t = L ? b.toL : b.toR;
+    line([h, k, a], 0.64*U, c.pants);
+    line([a, t], 0.4*U, c.shoe); dot(a, 0.24*U, c.shoe);
+  };
+  const arm = s => {
+    const L = s === "L";
+    const sh = L ? b.shL : b.shR, e = L ? b.elL : b.elR, w = L ? b.wrL : b.wrR;
+    line([e, w], 0.4*U, c.skin);
+    line([sh, e], 0.52*U, c.shirt);
+    dot(w, 0.27*U, c.skin);
+  };
+  const far = p.sideL > 0 ? "L" : "R", near = far === "L" ? "R" : "L";
+  leg(far); arm(far); leg(near);
+  line([b.hipL, b.hipR], 0.78*U, c.pants);
+  const up = (pt, k) => ({ x: pt.x + p.torso[0]*k*U, y: pt.y + p.torso[1]*k*U });
+  ctx.fillStyle = c.shirt; ctx.strokeStyle = c.shirt; ctx.lineWidth = 0.55*U; ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(b.shL.x, b.shL.y); ctx.lineTo(b.shR.x, b.shR.y);
+  const hR = up(b.hipR, 0.25), hL = up(b.hipL, 0.25);
+  ctx.lineTo(hR.x, hR.y); ctx.lineTo(hL.x, hL.y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  const neckTop = { x: b.shM.x + p.neck[0]*0.55*U, y: b.shM.y + p.neck[1]*0.55*U };
+  line([b.shM, neckTop], 0.36*U, c.skin);
+  arm(near);
+  drawHead(b.head, U, p, c);
+  ctx.restore();
+}
+function drawHead(h, U, p, c) {
+  const R = 0.66*U;
+  const tilt = Math.atan2(p.neck[0], -p.neck[1]);
+  ctx.save(); ctx.translate(h.x, h.y); ctx.rotate(tilt);
+  if (c.style === "bob") { ctx.fillStyle = c.hair; ctx.beginPath(); ctx.ellipse(0, 0.12*R, R*1.18, R*1.12, 0, 0, Math.PI*2); ctx.fill(); }
+  dot({x:0,y:0}, R, c.skin);
+  const fx = p.yaw * 0.42 * R;
+  ctx.fillStyle = c.hair; ctx.beginPath();
+  ctx.ellipse(-fx*0.2, -0.32*R, R*1.04, R*0.74, 0, Math.PI, Math.PI*2); ctx.fill();
+  if (c.style === "short") { ctx.beginPath(); ctx.ellipse(-fx*0.2 - 0.3*R, -0.42*R, R*0.62, R*0.42, -0.35, 0, Math.PI*2); ctx.fill(); }
+  dot({x: fx - 0.34*R, y: 0.08*R}, 0.09*R, "#2a2320");
+  dot({x: fx + 0.34*R, y: 0.08*R}, 0.09*R, "#2a2320");
+  ctx.fillStyle = "rgba(232,120,110,0.35)";
+  ctx.beginPath(); ctx.ellipse(fx - 0.55*R, 0.36*R, 0.16*R, 0.1*R, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(fx + 0.55*R, 0.36*R, 0.16*R, 0.1*R, 0, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = "#7a3b2e"; ctx.lineWidth = 0.07*R; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.arc(fx, 0.32*R, 0.24*R, 0.15*Math.PI, 0.85*Math.PI); ctx.stroke();
+  ctx.restore();
+  ctx.font = `${Math.round(0.42*U)}px ${css("--font-display") || "sans-serif"}`;
+  ctx.fillStyle = css("--muted"); ctx.textAlign = "center";
+  ctx.fillText(c.name, h.x, h.y - R * 1.5);
+}
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+const statusEl = $("status"), statusText = $("statusText"), repsEl = $("reps"), guideEl = $("guide");
+const video = $("video"), cam = $("cam");
+const BYTES = 7 + SEGS.length * 3 + 1;
+$("mBytes").textContent = BYTES + " 바이트";
+
+function setStatus(state, text) { statusEl.dataset.state = state; statusText.textContent = text; }
+function setGuide(text, ok) { guideEl.textContent = text; guideEl.classList.toggle("ok", !!ok); }
+function pick(which) {
+  preset = PRESETS[which];
+  $("cMom").setAttribute("aria-pressed", which === "mom");
+  $("cMe").setAttribute("aria-pressed", which === "me");
+}
+$("cMom").onclick = () => pick("mom");
+$("cMe").onclick = () => pick("me");
+$("hideCam").onchange = e => cam.classList.toggle("hidden-video", e.target.checked);
+$("resetBtn").onclick = () => { reps = 0; down = false; repsEl.textContent = "0"; };
+$("fullBtn").onclick = () => {
+  if (document.fullscreenElement) document.exitFullscreen?.();
+  else document.documentElement.requestFullscreen?.().catch(() => {});
+};
+
+// ---------- camera ----------
+let stream = null, facing = "user", wakeLock = null;
+async function startCamera() {
+  $("camErr").hidden = true;
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+    $("camEmpty").hidden = true;
+    $("startBtn").textContent = "카메라 다시 켜기";
+    cam.classList.toggle("mirror", facing === "user");
+    setGuide("사람을 찾는 중", false);
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+  } catch (err) {
+    console.error(err);
+    const e = $("camErr");
+    e.hidden = false;
+    e.textContent = err.name === "NotAllowedError"
+      ? "카메라 권한이 꺼져 있어요. 주소창 왼쪽 자물쇠 → 권한 → 카메라 허용 후 다시 눌러 주세요."
+      : "카메라를 켜지 못했어요 (" + err.name + ").";
+  }
+}
+$("startBtn").onclick = startCamera;
+$("flipBtn").onclick = () => { facing = facing === "user" ? "environment" : "user"; if (stream) startCamera(); };
+document.addEventListener("visibilitychange", async () => {
+  if (document.visibilityState === "visible" && stream && !wakeLock) {
+    try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+  }
+});
+
+// ---------- pose landmarker ----------
+let landmarker = null;
+(async () => {
+  try {
+    const { PoseLandmarker, FilesetResolver } = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`);
+    const make = delegate => PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate }, runningMode: "VIDEO", numPoses: 1,
+    });
+    try { landmarker = await make("GPU"); } catch { landmarker = await make("CPU"); }
+    setStatus("ready", "인식 모델 준비됨");
+  } catch (err) {
+    console.error(err);
+    setStatus("error", "인식 모델을 불러오지 못했어요");
+  }
+})();
+
+// ---------- main loop ----------
+let lastVideoTime = -1, frames = 0, latSum = 0, fpsT = performance.now(), lostFrames = 0;
+function loop(now) {
+  if (stream && landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    const t0 = performance.now();
+    const r = landmarker.detectForVideo(video, t0);
+    latSum += performance.now() - t0; frames++;
+    if (r.worldLandmarks && r.worldLandmarks.length) {
+      const img = r.landmarks[0];
+      let p = poseFromWorld(r.worldLandmarks[0], img);
+      if ($("mirror").checked) p = mirrorPose(p);
+      target = p;
+      trackSquat(kneeAngle(r.worldLandmarks[0]));
+      lostFrames = 0;
+      const feet = (img[27].visibility ?? 0) > 0.5 && (img[28].visibility ?? 0) > 0.5 && img[27].y < 0.98 && img[28].y < 0.98;
+      const head = (img[0].visibility ?? 0) > 0.5 && img[0].y > 0.02;
+      if (!feet) setGuide("한 걸음 뒤로 가 주세요", false);
+      else if (!head) setGuide("머리가 화면에 보이게 해 주세요", false);
+      else setGuide("전신이 잘 보여요", true);
+    } else if (++lostFrames > 15) {
+      target = neutralPose();
+      setGuide("사람을 찾는 중", false);
+    }
+  } else if (!stream) {
+    target = idlePose(now / 1000);
+  }
+  if (now - fpsT > 1000) {
+    if (stream && frames) {
+      const fps = Math.round(frames * 1000 / (now - fpsT));
+      $("mFps").textContent = fps + " fps";
+      $("mLat").textContent = Math.round(latSum / frames) + " ms";
+      $("mRate").textContent = (fps * BYTES / 1024).toFixed(1) + " KB/s";
+    }
+    frames = 0; latSum = 0; fpsT = now;
+  }
+  smooth(stream ? 0.55 : 0.2);
+  ctx.clearRect(0, 0, W, H);
+  if (W > 0) drawCharacter(shown);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
