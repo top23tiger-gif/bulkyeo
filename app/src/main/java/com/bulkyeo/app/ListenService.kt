@@ -33,6 +33,7 @@ import org.vosk.LogLevel
 import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
+import java.util.Calendar
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.LinkedBlockingQueue
@@ -160,6 +161,7 @@ class ListenService : Service() {
         Thread {
             try {
                 Recordings.weeklyMoveIfDue(this, prefs, skip)
+                Transcripts.exportFinished(this, prefs, skip) // 끝난 밤의 잠꼬대 기록을 Documents 로
             } catch (_: Exception) {
             }
         }.start()
@@ -291,6 +293,7 @@ class ListenService : Service() {
             var quietFrames = 0
             val segment = ArrayList<ShortArray>() // 녹음용: 소리가 난 구간
             var sys: SysSession? = null           // 구글/삼성 음성 인식 (소리가 날 때만)
+            var segStart = Calendar.getInstance()  // 소리가 시작된 시각 (녹음 파일 이름·기록 시간)
 
             try {
                 ar.startRecording()
@@ -315,6 +318,7 @@ class ListenService : Service() {
                         noiseFloor = if (db < noiseFloor) db else noiseFloor + 0.02 * (db - noiseFloor)
                         if (db > max(noiseFloor + TRIGGER_DB, MIN_TRIGGER_DB)) {
                             inSpeech = true
+                            segStart = Calendar.getInstance().apply { add(Calendar.MILLISECOND, -100 * ring.size) }
                             speechFrames = 0
                             quietFrames = 0
                             rec.reset()
@@ -350,13 +354,17 @@ class ListenService : Service() {
                             if (!voskCmd && text.isNotBlank()) lastHeard = "[기기] $text"
                             val seg = ArrayList(segment)
                             val save = !voskCmd && prefs.saveRecordings && speechFrames >= MIN_SAVE
+                            val start = segStart
+                            val vText = text
                             val s = sys
                             sys = null
                             when {
                                 voskCmd -> s?.cancel()
-                                // 구글 인식 결과까지 보고 명령이 아니면 녹음 저장
-                                s != null -> s.endAudio { found -> if (!found && save) saveAsync(seg, rate) }
-                                save -> saveAsync(seg, rate)
+                                // 구글 인식 결과까지 보고, 명령이 아니면 잠꼬대인지 확인 후 저장
+                                s != null -> s.endAudio { found, gText ->
+                                    if (!found && save) saveAsync(seg, rate, start, gText, vText)
+                                }
+                                save -> saveAsync(seg, rate, start, "", vText)
                             }
                             segment.clear()
                             inSpeech = false
@@ -397,19 +405,51 @@ class ListenService : Service() {
     @Volatile
     private var lastSavedAt = 0L
 
+    @Volatile
+    private var lastSavedLine: Pair<String, String>? = null // (밤 날짜, 시간) - 기록에서 지울 때
+
+    @Volatile
+    private var classifier: SoundClassifier? = null
+
+    @Synchronized
+    private fun classifier(): SoundClassifier? {
+        classifier?.let { return it }
+        return try {
+            SoundClassifier(this).also { classifier = it }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /**
-     * 녹음 저장. 이럴 때는 녹음하지 않는다:
-     *  - 불이 켜져 있는 동안 (조명 화면이 떠 있을 때)
-     *  - "불켜/불꺼" 명령 직후 몇 초 (명령 끝부분이 따로 잘려 녹음되지 않게)
+     * 잠꼬대만 녹음 저장. 이럴 때는 저장하지 않는다:
+     *  - 불이 켜져 있는 동안 (깨어 있음)
+     *  - "불켜/불꺼" 명령 직후 몇 초
+     *  - AI 소리 분류기가 코골이·숨소리라고 판단한 소리
+     * 저장한 잠꼬대는 한 말(글자)과 시간을 그 밤의 기록에도 적는다.
      */
-    private fun saveAsync(seg: List<ShortArray>, rate: Int) {
+    private fun saveAsync(seg: List<ShortArray>, rate: Int, start: Calendar, googleText: String, voskText: String) {
         if (LightState.isShowing) return
         if (SystemClock.elapsedRealtime() - lastCommandAt < NO_REC_AROUND_CMD) return
         Thread {
             try {
-                val f = Recordings.save(this, seg, rate)
+                val c = classifier()
+                val heard = googleText.isNotBlank()
+                val talk = if (c == null) heard else SoundClassifier.isSleepTalk(c.classify(seg, rate), heard)
+                if (!talk) return@Thread
+
+                val f = Recordings.save(this, seg, rate, start)
                 if (f != null) {
+                    val seconds = seg.sumOf { it.size } / rate.toDouble()
+                    val said = when {
+                        googleText.isNotBlank() -> googleText
+                        voskText.isNotBlank() -> "$voskText (추정)"
+                        else -> "(알아듣지 못함)"
+                    }
+                    Transcripts.append(this, start, seconds, said)
                     lastSaved = f
+                    lastSavedLine = Recordings.nightKey(start) to
+                        java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(start.time)
                     lastSavedAt = SystemClock.elapsedRealtime()
                 }
             } catch (_: Exception) {
@@ -442,7 +482,8 @@ class ListenService : Service() {
         private var sr: SpeechRecognizer? = null
         private var finished = false
         private var found = false
-        private var onDone: ((Boolean) -> Unit)? = null
+        private var onDone: ((Boolean, String) -> Unit)? = null
+        private var heardText = ""
         private val timeout = Runnable { finish(false) }
 
         fun start() = main.post { begin() }
@@ -452,10 +493,10 @@ class ListenService : Service() {
         }
 
         /** 소리 끝. 결과가 나오면 [cb] (명령을 찾았는지) 호출 */
-        fun endAudio(cb: (Boolean) -> Unit) {
+        fun endAudio(cb: (Boolean, String) -> Unit) {
             queue.offer(end)
             main.post {
-                if (finished) cb(found) else onDone = cb
+                if (finished) cb(found, heardText) else onDone = cb
             }
         }
 
@@ -523,7 +564,7 @@ class ListenService : Service() {
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, rate)
                 }
                 r.startListening(intent)
-                main.postDelayed(timeout, 10_000)
+                main.postDelayed(timeout, 15_000)
             } catch (e: Exception) {
                 sysFailures++
                 finish(false)
@@ -532,7 +573,12 @@ class ListenService : Service() {
 
         private fun checkResults(b: Bundle?): Boolean {
             val texts = b?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return false
-            texts.firstOrNull()?.let { if (it.isNotBlank()) lastHeard = "[구글] $it" }
+            texts.firstOrNull()?.let {
+                if (it.isNotBlank()) {
+                    lastHeard = "[구글] $it"
+                    heardText = it
+                }
+            }
             for (t in texts) {
                 if (handle(t, "구글")) {
                     found = true
@@ -562,7 +608,7 @@ class ListenService : Service() {
                 }
             }
             pipe = null
-            onDone?.invoke(found)
+            onDone?.invoke(found, heardText)
             onDone = null
         }
     }
@@ -579,6 +625,8 @@ class ListenService : Service() {
         if (now - lastSavedAt < NO_REC_AROUND_CMD) {
             lastSaved?.delete()
             lastSaved = null
+            lastSavedLine?.let { (night, time) -> Transcripts.removeLine(this, night, time) }
+            lastSavedLine = null
         }
         main.post { if (on) lightOn() else lightOff() }
         return true
@@ -680,7 +728,7 @@ class ListenService : Service() {
         private const val TRIGGER_DB = 10.0     // 주변 소음보다 이만큼 크면 "목소리" 로 봄
         private const val MIN_TRIGGER_DB = -55.0
         private const val END_QUIET = 10        // 1초 조용하면 끝
-        private const val MAX_SPEECH = 50       // 최대 5초까지만 인식
+        private const val MAX_SPEECH = 100      // 한 녹음 파일은 최대 10초
         private const val NO_REC_AROUND_CMD = 4000L // 명령 앞뒤 4초는 녹음하지 않음
         private const val MIN_SAVE = 3          // 0.3초보다 짧은 소리는 녹음하지 않음
 

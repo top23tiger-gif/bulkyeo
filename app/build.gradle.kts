@@ -14,8 +14,8 @@ android {
         applicationId = "com.bulkyeo.app"
         minSdk = 30
         targetSdk = 34
-        versionCode = 9
-        versionName = "9.0"
+        versionCode = 10
+        versionName = "10.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
@@ -43,6 +43,11 @@ android {
         }
     }
 
+    // AI 소리 분류기 모델은 압축하지 않아야 바로 읽을 수 있다
+    androidResources {
+        noCompress += "tflite"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -56,4 +61,6 @@ dependencies {
     // 기기 안에서만 동작하는 음성 인식 (인터넷 불필요)
     implementation("com.alphacephei:vosk-android:0.3.47@aar")
     implementation("net.java.dev.jna:jna:5.13.0@aar")
+    // 기기 안에서만 동작하는 AI 소리 분류기 (잠꼬대 / 코골이 구분)
+    implementation("org.tensorflow:tensorflow-lite-task-audio:0.4.4")
 }

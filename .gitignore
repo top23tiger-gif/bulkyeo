@@ -6,3 +6,4 @@ local.properties
 .DS_Store
 captures/
 app/src/main/assets/model-ko/
+app/src/main/assets/yamnet.tflite

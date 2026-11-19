@@ -37,8 +37,8 @@ object Recordings {
     }
 
     /** PCM 16bit 모노 소리를 WAV 로 저장. 저장한 파일 (못 했으면 null) */
-    fun save(context: Context, frames: List<ShortArray>, rate: Int): File? {
-        val now = Calendar.getInstance()
+    fun save(context: Context, frames: List<ShortArray>, rate: Int, start: Calendar = Calendar.getInstance()): File? {
+        val now = start
         val dir = File(root(context), nightKey(now))
         dir.mkdirs()
         if ((dir.list()?.size ?: 0) >= MAX_PER_NIGHT) return null

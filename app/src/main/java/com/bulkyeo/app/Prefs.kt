@@ -60,6 +60,11 @@ class Prefs(context: Context) {
     val inTestMode: Boolean
         get() = System.currentTimeMillis() < testUntil
 
+    /** 이미 Documents 로 저장한 잠꼬대 기록 (밤 날짜) */
+    var exportedTranscripts: Set<String>
+        get() = sp.getStringSet("exportedTranscripts", emptySet()) ?: emptySet()
+        set(v) = sp.edit().putStringSet("exportedTranscripts", HashSet(v)).apply()
+
     fun inSchedule(now: Calendar = Calendar.getInstance()): Boolean {
         if (!scheduleOn) return true
         val m = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)

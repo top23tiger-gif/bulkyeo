@@ -185,7 +185,7 @@ class RecordingsActivity : Activity() {
         openNight = null
         col.removeAllViews()
         col.addView(label("밤 날짜를 고르세요", 22f, Color.WHITE))
-        col.addView(label("밤 9시 ~ 아침 6시 녹음은 시작한 밤의 날짜로 묶여요.\n불이 켜져 있을 때(깨어 있을 때)는 녹음하지 않아요.", 16f, Color.GRAY))
+        col.addView(label("잠꼬대만 모았어요 (코골이·숨소리는 AI 가 걸러요).\n밤 9시 ~ 아침 6시 녹음은 시작한 밤의 날짜로 묶이고,\n불이 켜져 있을 때(깨어 있을 때)는 녹음하지 않아요.\n한 말 기록: 내 파일 > Documents > 불켜", 16f, Color.GRAY))
         if (catalog.isEmpty()) col.addView(label("아직 녹음이 없어요.", 22f, Color.LTGRAY))
         for ((night, clips) in catalog) {
             val total = clips.sumOf { it.durationMs }
@@ -213,9 +213,21 @@ class RecordingsActivity : Activity() {
             queue = clips
             playAt(0)
         })
+        val said = Transcripts.lines(this, night)
+        val tf = Transcripts.file(this, night)
+        if (tf.exists()) {
+            col.addView(button("📝 이 밤 잠꼬대 글로 보기") {
+                AlertDialog.Builder(this)
+                    .setTitle("${nightLabel(night)} 잠꼬대 기록")
+                    .setMessage(tf.readText())
+                    .setPositiveButton("닫기", null)
+                    .show()
+            })
+        }
         clips.forEachIndexed { i, clip ->
             val where = if (clip.inApp) "" else "  ·  📁"
-            col.addView(button("${clip.timeText}   (${fmt(clip.durationMs)})$where") {
+            val words = said[clip.timeText]?.let { "\n“$it”" } ?: ""
+            col.addView(button("${clip.timeText}   (${fmt(clip.durationMs)})$where$words") {
                 queue = clips
                 playAt(i)
             }.apply {
